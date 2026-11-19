@@ -3,9 +3,13 @@ from __future__ import annotations
 import datetime as dt
 import re
 import statistics
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Union
 
-import pymupdf as fitz  # PyMuPDF
+try:
+    import pymupdf as fitz  # PyMuPDF >= 1.24.3
+except ImportError:  # pragma: no cover
+    import fitz  # type: ignore
 
 from .models import (
     BBox,
@@ -866,7 +870,7 @@ def extract_key_text_from_cited_pdf(pdf_bytes: bytes, max_chars: int = 14000) ->
 
 def extract_main_figure_from_cited_pdf(
     pdf_bytes: bytes,
-    out_png_path: "os.PathLike[str] | str",
+    out_png_path: Union[Path, str],
 ) -> Optional[str]:
     """
     Extract the Main Figure (preferring Fig. 1 / Figure 1, or first clear figure on pages 1-6)

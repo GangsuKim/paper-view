@@ -86,8 +86,8 @@ if (-not (Test-Path $VenvPython)) {
     }
 }
 
-if (-not (Test-Path $DepsStamp)) {
-    Write-Host "[2/3] 백엔드 필수 패키지를 설치하는 중입니다..." -ForegroundColor Yellow
+if (-not (Test-Path $DepsStamp) -or ((Get-Item "$Root\backend\requirements.txt").LastWriteTime -gt (Get-Item $DepsStamp).LastWriteTime)) {
+    Write-Host "[2/3] 백엔드 필수 패키지를 설치·동기화하는 중입니다..." -ForegroundColor Yellow
     & $VenvPython -m pip install --upgrade pip --quiet
     & $VenvPython -m pip install -r "$Root\backend\requirements.txt"
     # Optional Antigravity SDK (non-fatal if unavailable on older Python versions)
@@ -99,9 +99,15 @@ if (-not (Test-Path $DepsStamp)) {
     Set-Content -Path $DepsStamp -Value "ok"
 }
 
-# 3. Auto-install & build frontend if dist/index.html is missing
+# 3. Auto-install & build frontend if dist/index.html is missing or older than frontend/src
 $DistIndex = Join-Path $Root "frontend\dist\index.html"
-if (-not (Test-Path $DistIndex)) {
+$NeedFeBuild = -not (Test-Path $DistIndex)
+if (-not $NeedFeBuild) {
+    $DistTime = (Get-Item $DistIndex).LastWriteTime
+    $NewerSrc = Get-ChildItem -Path "$Root\frontend\src","$Root\frontend\package.json" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $DistTime } | Select-Object -First 1
+    if ($NewerSrc) { $NeedFeBuild = $true }
+}
+if ($NeedFeBuild) {
     if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
         Write-Host "[오류] 프론트엔드 초기 빌드를 위해 Node.js(npm) 18 이상이 필요합니다: https://nodejs.org/" -ForegroundColor Red
         exit 1

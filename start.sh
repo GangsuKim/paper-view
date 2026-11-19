@@ -59,9 +59,9 @@ echo "====================================================="
 echo "  PaperView — Auto Setup & Local Server Launcher"
 echo "====================================================="
 
-# 1. Check Python 3.10+
+# 1. Locate Python (prefer Python 3.10+ via Homebrew/pyenv if available, fallback to Python 3.9+)
 PY_CMD=""
-for cand in python3 python; do
+for cand in python3.13 python3.12 python3.11 python3.10 /opt/homebrew/bin/python3 /usr/local/bin/python3 python3 python; do
   if command -v "$cand" >/dev/null 2>&1; then
     PY_CMD="$cand"
     break
@@ -69,36 +69,45 @@ for cand in python3 python; do
 done
 
 if [ -z "$PY_CMD" ]; then
-  echo "[오류] Python 3.10 이상이 필요합니다 (https://www.python.org/downloads/)."
+  echo "[오류] Python 3.9 이상이 필요합니다 (https://www.python.org/downloads/)."
   exit 1
 fi
 
-# 2. Auto-create backend/venv & install dependencies on first run
+# 2. Auto-create backend/venv & install/sync dependencies
 VENV_PY="$ROOT_DIR/backend/venv/bin/python"
 DEPS_STAMP="$ROOT_DIR/backend/venv/.paperview_ready"
+REQ_FILE="$ROOT_DIR/backend/requirements.txt"
 
 if [ ! -x "$VENV_PY" ]; then
   echo "[1/3] Python 가상환경(backend/venv) 생성 중..."
   "$PY_CMD" -m venv "$ROOT_DIR/backend/venv"
 fi
 
-if [ ! -f "$DEPS_STAMP" ]; then
-  echo "[2/3] 백엔드 필수 패키지 설치 중..."
+if [ ! -f "$DEPS_STAMP" ] || [ "$REQ_FILE" -nt "$DEPS_STAMP" ]; then
+  echo "[2/3] 백엔드 필수 패키지 설치·동기화 중..."
   "$VENV_PY" -m pip install --upgrade pip -q
-  "$VENV_PY" -m pip install -r "$ROOT_DIR/backend/requirements.txt"
+  "$VENV_PY" -m pip install -r "$REQ_FILE"
   "$VENV_PY" -m pip install "google-antigravity>=0.1.23" -q >/dev/null 2>&1 || true
   echo "ok" > "$DEPS_STAMP"
 fi
 
-# 3. Auto-install & build frontend if dist/index.html is missing
-if [ ! -f "$ROOT_DIR/frontend/dist/index.html" ]; then
+# 3. Auto-install & build frontend on first run OR after git pull updates frontend/src
+DIST_INDEX="$ROOT_DIR/frontend/dist/index.html"
+NEED_FE_BUILD=0
+if [ ! -f "$DIST_INDEX" ]; then
+  NEED_FE_BUILD=1
+elif find "$ROOT_DIR/frontend/src" "$ROOT_DIR/frontend/package.json" -newer "$DIST_INDEX" 2>/dev/null | grep -q .; then
+  NEED_FE_BUILD=1
+fi
+
+if [ "$NEED_FE_BUILD" -eq 1 ]; then
   if ! command -v npm >/dev/null 2>&1; then
-    echo "[오류] 프론트엔드 초기 빌드를 위해 Node.js(npm) 18 이상이 필요합니다 (https://nodejs.org/)."
+    echo "[오류] 프론트엔드 빌드를 위해 Node.js(npm) 18 이상이 필요합니다 (https://nodejs.org/)."
     exit 1
   fi
-  echo "[3/3] 프론트엔드 패키지 설치 및 빌드 중..."
+  echo "[3/3] 프론트엔드 패키지 확인 및 프로덕션 번들 빌드 중..."
   cd "$ROOT_DIR/frontend"
-  if [ ! -d "node_modules" ]; then
+  if [ ! -d "node_modules" ] || [ "package.json" -nt "node_modules" ]; then
     npm install
   fi
   npm run build

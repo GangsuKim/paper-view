@@ -6,6 +6,7 @@ import json
 import mimetypes
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
@@ -117,7 +118,7 @@ app.add_middleware(
 def _ingest_pdf_bytes(
     pdf_bytes: bytes,
     filename: str,
-    lang: str | None = None,
+    lang: Optional[str] = None,
 ) -> PaperDocument:
     if len(pdf_bytes) < 16 or pdf_bytes[:4] != b"%PDF":
         raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
@@ -206,7 +207,7 @@ async def update_engine_settings(req: EngineSettingsRequest) -> dict:
 
 
 @app.get("/api/papers", response_model=list[PaperSummaryItem])
-async def get_papers(lang: str | None = None) -> list[PaperSummaryItem]:
+async def get_papers(lang: Optional[str] = None) -> list[PaperSummaryItem]:
     code = normalize_lang_code(lang or get_effective_default_lang())
     return list_papers(lang=code)
 
@@ -214,7 +215,7 @@ async def get_papers(lang: str | None = None) -> list[PaperSummaryItem]:
 @app.post("/api/papers/upload")
 async def upload_paper(
     file: UploadFile = File(...),
-    lang: str | None = Form(None),
+    lang: Optional[str] = Form(None),
 ) -> dict:
     code = normalize_lang_code(lang or get_effective_default_lang())
     pdf_bytes = await file.read()
@@ -260,7 +261,7 @@ async def import_paper_from_url(req: ImportUrlRequest) -> dict:
 
 
 @app.get("/api/papers/{paper_id}")
-async def get_paper(paper_id: str, lang: str | None = None) -> dict:
+async def get_paper(paper_id: str, lang: Optional[str] = None) -> dict:
     code = normalize_lang_code(lang or get_effective_default_lang())
     doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
@@ -303,7 +304,7 @@ async def stream_paper_translation(
     paper_id: str,
     engine: str = "auto",
     force: bool = False,
-    lang: str | None = None,
+    lang: Optional[str] = None,
 ) -> StreamingResponse:
     """
     SSE endpoint that runs AI section segmentation (Abstract / Introduction / ...)
@@ -326,7 +327,7 @@ async def stream_paper_translation(
 
 
 @app.post("/api/papers/{paper_id}/stop-stream")
-async def stop_paper_stream(paper_id: str, lang: str | None = None) -> dict:
+async def stop_paper_stream(paper_id: str, lang: Optional[str] = None) -> dict:
     code = normalize_lang_code(lang or get_effective_default_lang())
     doc = await stream_coordinator.stop_job(paper_id, lang=code)
     if doc is None:
@@ -533,7 +534,7 @@ async def analyze_sentences_batch(
 async def get_citation_metadata(
     paper_id: str,
     ref_key: str,
-    lang: str | None = None,
+    lang: Optional[str] = None,
 ) -> CitationMetadataResponse:
     """Stage 1: Return citation title, authors, year, venue, links, and citing context WITHOUT running AI summary."""
     code = normalize_lang_code(lang or get_effective_default_lang())
@@ -623,7 +624,7 @@ async def summarize_citation(
 
 
 @app.get("/api/papers/{paper_id}/chat")
-async def get_paper_chat(paper_id: str, lang: str | None = None) -> dict:
+async def get_paper_chat(paper_id: str, lang: Optional[str] = None) -> dict:
     code = normalize_lang_code(lang or get_effective_default_lang())
     doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
@@ -632,7 +633,7 @@ async def get_paper_chat(paper_id: str, lang: str | None = None) -> dict:
 
 
 @app.delete("/api/papers/{paper_id}/chat")
-async def reset_paper_chat(paper_id: str, lang: str | None = None) -> dict:
+async def reset_paper_chat(paper_id: str, lang: Optional[str] = None) -> dict:
     code = normalize_lang_code(lang or get_effective_default_lang())
     doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
@@ -734,7 +735,7 @@ async def enqueue_uploaded_pdfs(
     files: list[UploadFile] = File(...),
     engine: str = Form("claude"),
     force: bool = Form(False),
-    lang: str | None = Form(None),
+    lang: Optional[str] = Form(None),
 ) -> QueueStateResponse:
     if not files:
         raise HTTPException(status_code=400, detail="업로드할 PDF 파일을 선택해주세요.")
