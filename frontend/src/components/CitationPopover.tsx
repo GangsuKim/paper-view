@@ -13,10 +13,12 @@ import {
   Image as ImageIcon,
 } from 'lucide-react';
 import { getApiBase } from '../api';
+import { getUiStrings, type LangCode } from '../i18n';
 import type { CitationMetadataResponse, CitationSummaryResponse } from '../types';
 import { renderMathText } from '../utils/mathRenderer';
 
 interface CitationPopoverProps {
+  lang?: LangCode;
   refKey: string;
   metadata: CitationMetadataResponse | null;
   loadingMeta: boolean;
@@ -38,6 +40,7 @@ function notifyVsCodeExternalIfEmbedded(url: string): void {
 }
 
 export const CitationPopover: React.FC<CitationPopoverProps> = ({
+  lang = 'ko',
   refKey,
   metadata,
   loadingMeta,
@@ -51,6 +54,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
   onRequestSummary,
   onJumpToSentence,
 }) => {
+  const t = getUiStrings(lang);
   const [showRawRef, setShowRawRef] = useState(false);
   const [showCitingList, setShowCitingList] = useState(false);
   const [zoomMainFig, setZoomMainFig] = useState(false);
@@ -74,25 +78,29 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
     ? `${getApiBase()}${effectiveSummary.main_figure_url}`
     : null;
 
+  const engineLabel =
+    selectedEngine === 'codex'
+      ? 'Codex'
+      : selectedEngine === 'antigravity'
+      ? 'Antigravity'
+      : 'Claude';
+  const modelDescriptor = selectedModelLabel ? `${engineLabel} (${selectedModelLabel})` : engineLabel;
+
   return (
     <>
-      <div className="citation-drawer" role="dialog" aria-label={`인용 논문 [${refKey}] 정보`}>
+      <div className="citation-drawer" role="dialog" aria-label={`[${refKey}] ${t.citHeader}`}>
         <div className="citation-drawer-header">
           <div className="cit-header-left">
             <span className="cit-ref-badge">[{refKey}]</span>
-            <span className="cit-header-label">인용 논문 정보</span>
+            <span className="cit-header-label">{t.citHeader}</span>
           </div>
-          <button type="button" className="icon-btn" onClick={onClose} title="닫기">
+          <button type="button" className="icon-btn" onClick={onClose} title={t.close}>
             <X size={16} />
           </button>
         </div>
 
         <div className="citation-drawer-body">
-          {loadingMeta && (
-            <div className="cit-loading-box">
-              서지 정보(제목·저자·출판연도)를 조회하는 중입니다...
-            </div>
-          )}
+          {loadingMeta && <div className="cit-loading-box">{t.citLoadingMeta}</div>}
 
           {metaError && <div className="pane-error">{metaError}</div>}
 
@@ -104,7 +112,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                 {metadata.authors.length > 0 && (
                   <div className="cit-authors">
                     {metadata.authors.slice(0, 5).join(', ')}
-                    {metadata.authors.length > 5 ? ` 외 ${metadata.authors.length - 5}명` : ''}
+                    {metadata.authors.length > 5 ? t.etAl(metadata.authors.length - 5) : ''}
                   </div>
                 )}
 
@@ -112,21 +120,18 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   {metadata.year && <span className="cit-tag year">{metadata.year}</span>}
                   {metadata.venue && <span className="cit-tag venue">{metadata.venue}</span>}
                   {metadata.arxiv_id && (
-                    <span className="cit-tag oa" title="arXiv 오픈액세스 버전 확인됨">
-                      arXiv:{metadata.arxiv_id}
-                    </span>
+                    <span className="cit-tag oa">arXiv:{metadata.arxiv_id}</span>
                   )}
                   {metadata.has_fulltext ? (
-                    <span className="cit-tag oa">원문 PDF 확보 가능</span>
+                    <span className="cit-tag oa">{t.fulltextReady}</span>
                   ) : metadata.has_abstract ? (
-                    <span className="cit-tag abs">초록 확보됨</span>
+                    <span className="cit-tag abs">{t.abstractReady}</span>
                   ) : (
-                    <span className="cit-tag basic">서지 텍스트</span>
+                    <span className="cit-tag basic">{t.bibOnly}</span>
                   )}
                 </div>
               </div>
 
-              {/* New-tab links bar */}
               <div className="cit-links-bar">
                 <a
                   href={goPaperUrl}
@@ -134,12 +139,9 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   rel="noopener noreferrer"
                   className="cit-link-btn primary-go"
                   onClick={() => notifyVsCodeExternalIfEmbedded(goPaperUrl)}
-                  title="새 탭에서 해당 논문 페이지 열기 (arXiv 우선)"
                 >
                   <ExternalLink size={13} />
-                  <span>
-                    {metadata.arxiv_id ? '해당 논문 보러가기 (arXiv)' : '해당 논문 보러가기'}
-                  </span>
+                  <span>{metadata.arxiv_id ? t.goPaperArxiv : t.goPaper}</span>
                 </a>
 
                 {metadata.pdf_url && metadata.pdf_url !== goPaperUrl && (
@@ -149,10 +151,9 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                     rel="noopener noreferrer"
                     className="cit-link-btn"
                     onClick={() => notifyVsCodeExternalIfEmbedded(metadata.pdf_url!)}
-                    title="새 탭에서 원문 PDF 열기"
                   >
                     <FileText size={13} />
-                    <span>원문 PDF</span>
+                    <span>{t.rawPdfBtn}</span>
                   </a>
                 )}
 
@@ -162,10 +163,9 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                     target="_blank"
                     rel="noopener noreferrer"
                     className="cit-link-btn highlight"
-                    title="새 탭의 PaperView 리더에서 이 인용 논문을 바로 번역하며 읽습니다"
                   >
                     <ArrowUpRight size={13} />
-                    <span>PaperView 새 탭 열기</span>
+                    <span>{t.openInNewTab}</span>
                   </a>
                 )}
 
@@ -176,7 +176,6 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                     rel="noopener noreferrer"
                     className="cit-link-btn"
                     onClick={() => notifyVsCodeExternalIfEmbedded(publisherDoiUrl)}
-                    title="출판사/학회 DOI 페이지 열기"
                   >
                     <ExternalLink size={12} />
                     <span>DOI</span>
@@ -184,7 +183,6 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                 )}
               </div>
 
-              {/* Stage 2 Trigger: Only runs AI when user clicks [간단 요약 보기] */}
               {!effectiveSummary && !loadingSummary && (
                 <div className="cit-summary-cta-box">
                   <button
@@ -193,19 +191,10 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                     onClick={() => onRequestSummary(false)}
                   >
                     <Sparkles size={16} />
-                    <span>간단 요약 보기</span>
+                    <span>{t.quickSummaryBtn}</span>
                   </button>
                   <p className="cit-cta-hint">
-                    <strong>
-                      {selectedEngine === 'codex'
-                        ? 'Codex'
-                        : selectedEngine === 'antigravity'
-                        ? 'Antigravity'
-                        : 'Claude'}
-                      {selectedModelLabel ? ` (${selectedModelLabel})` : ''}
-                    </strong>{' '}
-                    모델로 {metadata.has_fulltext ? '원문 및 Main Figure' : '초록 및 문맥'}를 읽어
-                    요약합니다. 요약 중 창을 닫아도 완료 시 우상단에 알림이 표시됩니다.
+                    {t.quickSummaryHint(modelDescriptor, metadata.has_fulltext)}
                   </p>
                 </div>
               )}
@@ -215,15 +204,12 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   <div className="cit-summary-loading">
                     <div className="spinner-ring" />
                     <div>
-                      <strong>[{refKey}]번 인용 논문을 읽고 요약하는 중...</strong>
-                      <p>
-                        창을 닫고 본문을 계속 읽으셔도 백그라운드에서 진행되며, 완성되면 우상단에
-                        알림을 띄워드립니다.
-                      </p>
+                      <strong>{t.summarizingTitle(refKey)}</strong>
+                      <p>{t.summarizingBody}</p>
                     </div>
                   </div>
                   <button type="button" className="cit-bg-close-btn" onClick={onClose}>
-                    창 닫고 본문 계속 읽기
+                    {t.closeKeepReading}
                   </button>
                 </div>
               )}
@@ -249,7 +235,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                       <button
                         type="button"
                         className="icon-tiny-btn"
-                        title="현재 선택한 모델로 다시 요약"
+                        title={t.retranslateTitle}
                         onClick={() => onRequestSummary(true)}
                       >
                         <RefreshCw size={12} />
@@ -257,26 +243,24 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                     </div>
                   </div>
 
-                  {/* Main Figure of the Cited Paper */}
                   {mainFigFullUrl && (
                     <div className="cit-main-fig-card">
                       <div className="cit-main-fig-header">
                         <span className="row-center">
                           <ImageIcon size={12} />
-                          <strong>인용 논문 Main Figure</strong>
+                          <strong>{t.mainFigTitle}</strong>
                         </span>
                         <button
                           type="button"
                           className="cit-fig-zoom-btn"
                           onClick={() => setZoomMainFig(true)}
                         >
-                          <ZoomIn size={12} /> 크게 보기
+                          <ZoomIn size={12} /> {t.zoomImage}
                         </button>
                       </div>
                       <div
                         className="cit-main-fig-img-wrap"
                         onClick={() => setZoomMainFig(true)}
-                        title="클릭하여 원본 크기로 확대"
                       >
                         <img src={mainFigFullUrl} alt={`[${refKey}] Main Figure`} />
                       </div>
@@ -289,13 +273,13 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   )}
 
                   <div className="cit-tldr-card">
-                    <span className="cit-sec-kicker">한줄 핵심 요약</span>
+                    <span className="cit-sec-kicker">{t.tldrLabel}</span>
                     <p>{renderMathText(effectiveSummary.tldr, 'cit_tldr')}</p>
                   </div>
 
                   {effectiveSummary.summary_points.length > 0 && (
                     <div className="cit-points-block">
-                      <span className="cit-sec-kicker">주요 내용</span>
+                      <span className="cit-sec-kicker">{t.keyPointsLabel}</span>
                       <ul>
                         {effectiveSummary.summary_points.map((pt, i) => (
                           <li key={i}>{renderMathText(pt, `cit_pt_${i}`)}</li>
@@ -306,14 +290,13 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
 
                   {effectiveSummary.why_cited && (
                     <div className="cit-why-block">
-                      <span className="cit-sec-kicker">현재 논문에서 인용한 이유</span>
+                      <span className="cit-sec-kicker">{t.whyCitedLabel}</span>
                       <p>{renderMathText(effectiveSummary.why_cited, 'cit_why')}</p>
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Citing sentences inside current paper */}
               {metadata.citing_sentences.length > 0 && (
                 <div className="cit-collapsible">
                   <button
@@ -323,7 +306,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   >
                     <span className="row-center">
                       <Quote size={13} />
-                      본문 내 인용 위치 ({metadata.citing_sentences.length}곳)
+                      {t.citingLocs(metadata.citing_sentences.length)}
                     </span>
                     {showCitingList ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                   </button>
@@ -353,7 +336,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   className="cit-collapse-toggle"
                   onClick={() => setShowRawRef((v) => !v)}
                 >
-                  <span>원문 References 표기 보기</span>
+                  <span>{t.rawRefToggle}</span>
                   {showRawRef ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 </button>
                 {showRawRef && <div className="cit-raw-box">{metadata.raw_reference}</div>}
@@ -367,12 +350,14 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
         <div className="media-lightbox-backdrop" onClick={() => setZoomMainFig(false)}>
           <div className="media-lightbox-modal" onClick={(e) => e.stopPropagation()}>
             <div className="media-lightbox-top">
-              <strong>[{refKey}] 인용 논문 Main Figure</strong>
+              <strong>
+                [{refKey}] {t.mainFigTitle}
+              </strong>
               <button
                 type="button"
                 className="icon-btn"
                 onClick={() => setZoomMainFig(false)}
-                title="닫기"
+                title={t.close}
               >
                 <X size={18} />
               </button>

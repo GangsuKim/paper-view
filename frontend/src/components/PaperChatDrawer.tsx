@@ -15,10 +15,12 @@ import {
   fetchPaperChatHistory,
   streamPaperChatMessage,
 } from '../api';
+import { getUiStrings, type LangCode } from '../i18n';
 import type { ChatMessage, SentenceItem } from '../types';
 import { renderMathText } from '../utils/mathRenderer';
 
 interface PaperChatDrawerProps {
+  lang?: LangCode;
   paperId: string;
   paperTitle: string;
   width: number;
@@ -33,13 +35,6 @@ interface PaperChatDrawerProps {
   onClickCitationInChat: (refKey: string) => void;
   onChatTurnCompleted?: () => void;
 }
-
-const QUICK_PROMPTS = [
-  '핵심 Contribution 3줄 요약해줘',
-  '제안 방법론(Method) 핵심 흐름만 간단히 설명해줘',
-  '기존 베이스라인 대비 주요 실험 강점은 뭐야?',
-  '이 연구의 주요 한계점이나 가정을 짧게 짚어줘',
-];
 
 function renderInlineRich(
   text: string,
@@ -180,6 +175,7 @@ function renderChatMarkdown(
 }
 
 export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
+  lang = 'ko',
   paperId,
   paperTitle,
   width,
@@ -194,6 +190,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
   onClickCitationInChat,
   onChatTurnCompleted,
 }) => {
+  const t = getUiStrings(lang);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputVal, setInputVal] = useState('');
   const [responseStyle, setResponseStyle] = useState<'concise' | 'detailed'>('concise');
@@ -209,13 +206,13 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
   useEffect(() => {
     setChatError(null);
     setStreamingReply('');
-    fetchPaperChatHistory(paperId)
+    fetchPaperChatHistory(paperId, lang)
       .then(setMessages)
       .catch(() => setMessages([]));
     return () => {
       abortRef.current?.abort();
     };
-  }, [paperId]);
+  }, [paperId, lang]);
 
   useEffect(() => {
     scrollBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -257,6 +254,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
         message: question,
         contextSnippet,
         engine: selectedEngine,
+        lang,
         responseStyle,
         signal: controller.signal,
         onUserSaved: (savedUser) => {
@@ -291,12 +289,12 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
       abortRef.current?.abort();
     }
     try {
-      await clearPaperChatHistory(paperId);
+      await clearPaperChatHistory(paperId, lang);
       setMessages([]);
       setStreamingReply('');
       setChatError(null);
     } catch (err: any) {
-      setChatError(err?.message || '대화 초기화 실패');
+      setChatError(err?.message || 'Error');
     }
   };
 
@@ -305,17 +303,16 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
       <div
         className="chat-split-resizer"
         onMouseDown={onStartResize}
-        title="좌우로 드래그하여 논문 채팅 창 너비 조절"
       />
       <aside
         className="paper-chat-panel"
         style={{ width: `${width}px` }}
-        aria-label="논문 AI 채팅"
+        aria-label={t.chatTitle}
       >
         <div className="chat-panel-header">
           <div className="chat-header-title">
             <MessageSquare size={15} className="sec-icon" />
-            <span>논문 Q&A</span>
+            <span>{t.chatTitle}</span>
             {selectedModelLabel && (
               <span className="chat-model-pill" title={selectedModelLabel}>
                 {selectedModelLabel}
@@ -324,27 +321,26 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
           </div>
 
           <div className="row-center" style={{ gap: 4 }}>
-            <div className="chat-style-switch" title="답변 길이 모드 선택 (기본: 간결)">
+            <div className="chat-style-switch">
               <button
                 type="button"
                 className={responseStyle === 'concise' ? 'active' : ''}
                 onClick={() => setResponseStyle('concise')}
               >
-                간결
+                {t.concise}
               </button>
               <button
                 type="button"
                 className={responseStyle === 'detailed' ? 'active' : ''}
                 onClick={() => setResponseStyle('detailed')}
               >
-                상세
+                {t.detailed}
               </button>
             </div>
 
             <button
               type="button"
               className="icon-btn"
-              title={isWide ? '기본 너비로 축소' : '채팅 창 넓게 펼치기'}
               onClick={onToggleWide}
             >
               {isWide ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
@@ -354,13 +350,13 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
               <button
                 type="button"
                 className="icon-btn"
-                title="대화 내역 비우기"
+                title={t.clearChat}
                 onClick={handleClear}
               >
                 <Trash2 size={14} />
               </button>
             )}
-            <button type="button" className="icon-btn" title="채팅 패널 닫기" onClick={onClose}>
+            <button type="button" className="icon-btn" title={t.close} onClick={onClose}>
               <X size={16} />
             </button>
           </div>
@@ -372,12 +368,10 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
             <div className="chat-welcome-icon">
               <Sparkles size={20} />
             </div>
-            <h4>현재 논문 전체를 바탕으로 질문해 보세요</h4>
-            <p title={paperTitle}>
-              본문 전체, 수식 문맥, Figure·Table 캡션, 참고문헌이 자동으로 컨텍스트에 포함됩니다.
-            </p>
+            <h4>{t.chatWelcomeTitle}</h4>
+            <p title={paperTitle}>{t.chatWelcomeSub}</p>
             <div className="chat-starter-chips">
-              {QUICK_PROMPTS.map((q) => (
+              {t.quickPrompts.map((q) => (
                 <button
                   key={q}
                   type="button"
@@ -431,11 +425,11 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
               ) : (
                 <div className="row-center" style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
                   <div className="spinner-ring tiny" />
-                  <span>논문 내용을 바탕으로 답변을 작성하는 중...</span>
+                  <span>{t.writingReply}</span>
                 </div>
               )}
               {streamingModel && (
-                <div className="chat-bubble-meta">실시간 생성 중 · {streamingModel}</div>
+                <div className="chat-bubble-meta">{streamingModel}</div>
               )}
             </div>
           </div>
@@ -458,8 +452,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
               >
                 <Pin size={11} />
                 <span>
-                  현재 선택한 {activeSentence.media_label || `문장(p.${activeSentence.page})`} 질문에
-                  첨부하기
+                  {t.pinToggle(activeSentence.media_label || `p.${activeSentence.page}`)}
                 </span>
               </button>
             ) : (
@@ -471,7 +464,6 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => setAttachSelected(false)}
-                  title="첨부 해제"
                 >
                   <X size={12} />
                 </button>
@@ -489,7 +481,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
         >
           <textarea
             rows={2}
-            placeholder="논문에 대해 궁금한 점을 질문하세요 (Enter 전송, Shift+Enter 줄바꿈)"
+            placeholder={t.chatPlaceholder}
             value={inputVal}
             onChange={(e) => setInputVal(e.target.value)}
             onKeyDown={(e) => {

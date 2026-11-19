@@ -19,6 +19,7 @@ import {
   Activity,
   ListChecks,
   Clock,
+  Languages,
 } from 'lucide-react';
 import {
   fetchCitationMetadata,
@@ -27,6 +28,7 @@ import {
   fetchPapersList,
   fetchQueueState,
   fetchUsageStatus,
+  generateMediaInsight,
   generatePaperOverview,
   getPaperPdfUrl,
   getPaperStreamUrl,
@@ -41,6 +43,12 @@ import { ReaderPane } from './components/ReaderPane';
 import { CitationPopover } from './components/CitationPopover';
 import { PaperChatDrawer } from './components/PaperChatDrawer';
 import { QueueModal } from './components/QueueModal';
+import {
+  detectInitialLang,
+  getUiStrings,
+  LANGUAGE_OPTIONS,
+  type LangCode,
+} from './i18n';
 import type {
   AllModelsCatalog,
   CitationMetadataResponse,
@@ -86,6 +94,11 @@ export const App: React.FC = () => {
   const [selectedEngine, setSelectedEngine] = useState<string>('claude');
   const selectedEngineRef = useRef<string>('claude');
 
+  const [lang, setLang] = useState<LangCode>(() => detectInitialLang());
+  const langRef = useRef<LangCode>(lang);
+  const [showLangMenu, setShowLangMenu] = useState<boolean>(false);
+  const t = getUiStrings(lang);
+
   const [showModelMenu, setShowModelMenu] = useState<boolean>(false);
   const [modelMenuTab, setModelMenuTab] = useState<'claude' | 'codex' | 'antigravity'>('claude');
   const [refreshingModels, setRefreshingModels] = useState<boolean>(false);
@@ -98,6 +111,7 @@ export const App: React.FC = () => {
   const paperRef = useRef<PaperDocument | null>(null);
   const [streamingSection, setStreamingSection] = useState<string>('');
   const [loadingOverview, setLoadingOverview] = useState<boolean>(false);
+  const [loadingInsightIds, setLoadingInsightIds] = useState<Set<string>>(new Set());
   const [citationSummaries, setCitationSummaries] = useState<
     Record<string, CitationSummaryResponse>
   >({});
@@ -178,6 +192,11 @@ export const App: React.FC = () => {
   }, [selectedEngine]);
 
   useEffect(() => {
+    langRef.current = lang;
+    document.documentElement.lang = lang;
+  }, [lang]);
+
+  useEffect(() => {
     paperRef.current = paper;
   }, [paper]);
 
@@ -200,12 +219,67 @@ export const App: React.FC = () => {
     return () => closeStream();
   }, [closeStream]);
 
+  const handleGoHome = useCallback(() => {
+    closeStream();
+    setPaper(null);
+    setActiveCitationKey(null);
+    setShowChatPanel(false);
+    setGlobalError(null);
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete('paperId');
+    cleanUrl.searchParams.delete('import');
+    const nextHref = `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`;
+    window.history.replaceState({}, '', nextHref || '/');
+  }, [closeStream]);
+
+  const handleRequestMediaInsight = useCallback(
+    async (sentenceId: string, force = false) => {
+      const curPaper = paperRef.current;
+      if (!curPaper) return;
+      const targetPaperId = curPaper.paper_id;
+      const useLang = langRef.current;
+      setLoadingInsightIds((prev) => new Set(prev).add(sentenceId));
+      try {
+        const res = await generateMediaInsight(
+          targetPaperId,
+          sentenceId,
+          selectedEngineRef.current,
+          force,
+          useLang
+        );
+        if (paperRef.current?.paper_id === targetPaperId && langRef.current === useLang) {
+          setPaper((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  sentences: prev.sentences.map((s) =>
+                    s.id === sentenceId ? { ...s, insight: res.insight } : s
+                  ),
+                }
+              : prev
+          );
+        }
+        loadUsageStatus(true);
+      } catch (err: any) {
+        setGlobalError(err?.message || 'Failed to generate figure insight.');
+      } finally {
+        setLoadingInsightIds((prev) => {
+          const next = new Set(prev);
+          next.delete(sentenceId);
+          return next;
+        });
+      }
+    },
+    [loadUsageStatus]
+  );
+
   const triggerPaperOverview = useCallback(
-    async (paperId: string, engine: string, force = false) => {
+    async (paperId: string, engine: string, force = false, targetLang?: LangCode) => {
+      const useLang = targetLang || langRef.current;
       setLoadingOverview(true);
       try {
-        const ov = await generatePaperOverview(paperId, engine, force);
-        if (paperRef.current?.paper_id === paperId) {
+        const ov = await generatePaperOverview(paperId, engine, force, useLang);
+        if (paperRef.current?.paper_id === paperId && langRef.current === useLang) {
           setPaper((prev) => (prev ? { ...prev, overview: ov } : prev));
         }
         loadUsageStatus(true);
@@ -221,14 +295,17 @@ export const App: React.FC = () => {
   );
 
   const startPaperStream = useCallback(
-    (paperId: string, engine: string, force = false) => {
+    (paperId: string, engine: string, force = false, targetLang?: LangCode) => {
+      const useLang = targetLang || langRef.current;
+      const localT = getUiStrings(useLang);
       closeStream();
-      setStreamingSection('논문 핵심 요약 & Contribution');
+      setStreamingSection(localT.overviewTitle);
       if (force) {
         setPaper((prev) =>
           prev && prev.paper_id === paperId
             ? {
                 ...prev,
+                lang: useLang,
                 overview: null,
                 sections: [],
                 sentences: [],
@@ -241,12 +318,12 @@ export const App: React.FC = () => {
       } else {
         setPaper((prev) =>
           prev && prev.paper_id === paperId
-            ? { ...prev, ai_status: 'streaming', ai_error: null }
+            ? { ...prev, lang: useLang, ai_status: 'streaming', ai_error: null }
             : prev
         );
       }
 
-      const es = new EventSource(getPaperStreamUrl(paperId, engine, force));
+      const es = new EventSource(getPaperStreamUrl(paperId, engine, force, useLang));
       eventSourceRef.current = es;
 
       es.addEventListener('snapshot', (ev) => {
@@ -393,7 +470,7 @@ export const App: React.FC = () => {
         setPaper((prev) =>
           prev ? { ...prev, ai_status: 'completed', ai_progress: 100 } : prev
         );
-        fetchPapersList()
+        fetchPapersList(useLang)
           .then(setRecentPapers)
           .catch(() => {});
         closeStream();
@@ -427,14 +504,19 @@ export const App: React.FC = () => {
   );
 
   const applyLoadedBundle = useCallback(
-    (bundle: LoadedPaperBundle) => {
+    (bundle: LoadedPaperBundle, targetLang?: LangCode) => {
+      const useLang = targetLang || langRef.current;
       closeStream();
       setPaper(bundle.paper);
       setCitationSummaries(bundle.citation_summaries || {});
       setCitationMetaCache({});
       setCitSummaryErrors({});
       setActiveCitationKey(null);
-      setActiveSentenceId(bundle.paper.sentences[0]?.id || null);
+      setActiveSentenceId((cur) =>
+        bundle.paper.sentences.some((s) => s.id === cur)
+          ? cur
+          : bundle.paper.sentences[0]?.id || null
+      );
       setGlobalError(null);
 
       const url = new URL(window.location.href);
@@ -442,7 +524,7 @@ export const App: React.FC = () => {
       url.searchParams.set('paperId', bundle.paper.paper_id);
       window.history.replaceState({}, '', url.toString());
 
-      fetchPapersList()
+      fetchPapersList(useLang)
         .then(setRecentPapers)
         .catch(() => {});
 
@@ -451,23 +533,24 @@ export const App: React.FC = () => {
         bundle.paper.ai_status === 'streaming' ||
         bundle.paper.sentences.length === 0
       ) {
-        startPaperStream(bundle.paper.paper_id, selectedEngineRef.current, false);
+        startPaperStream(bundle.paper.paper_id, selectedEngineRef.current, false, useLang);
       } else if (!bundle.paper.overview) {
-        triggerPaperOverview(bundle.paper.paper_id, selectedEngineRef.current, false);
+        triggerPaperOverview(bundle.paper.paper_id, selectedEngineRef.current, false, useLang);
       }
     },
     [closeStream, startPaperStream, triggerPaperOverview]
   );
 
   const openPaperById = useCallback(
-    async (paperId: string) => {
+    async (paperId: string, targetLang?: LangCode) => {
+      const useLang = targetLang || langRef.current;
       setLoadingPaper(true);
       setGlobalError(null);
       try {
-        const bundle = await fetchPaperBundle(paperId);
-        applyLoadedBundle(bundle);
+        const bundle = await fetchPaperBundle(paperId, useLang);
+        applyLoadedBundle(bundle, useLang);
       } catch (err: any) {
-        setGlobalError(err?.message || '논문을 불러오지 못했습니다.');
+        setGlobalError(err?.message || 'Failed to load paper.');
       } finally {
         setLoadingPaper(false);
       }
@@ -479,14 +562,15 @@ export const App: React.FC = () => {
     async (targetUrl?: string) => {
       const val = (targetUrl ?? arxivInput).trim();
       if (!val) return;
+      const useLang = langRef.current;
       setLoadingPaper(true);
       setGlobalError(null);
       try {
-        const bundle = await importPaperUrl(val);
+        const bundle = await importPaperUrl(val, useLang);
         setArxivInput('');
-        applyLoadedBundle(bundle);
+        applyLoadedBundle(bundle, useLang);
       } catch (err: any) {
-        setGlobalError(err?.message || 'URL/arXiv 논문을 가져오지 못했습니다.');
+        setGlobalError(err?.message || 'Failed to import URL/arXiv.');
       } finally {
         setLoadingPaper(false);
       }
@@ -494,8 +578,32 @@ export const App: React.FC = () => {
     [arxivInput, applyLoadedBundle]
   );
 
+  const handleChangeLanguage = useCallback(
+    async (nextLang: LangCode) => {
+      setShowLangMenu(false);
+      if (nextLang === langRef.current) return;
+      setLang(nextLang);
+      langRef.current = nextLang;
+      try {
+        localStorage.setItem('paperview_lang', nextLang);
+      } catch {
+        // ignore
+      }
+      updateEngineSettings({ default_lang: nextLang }).catch(() => {});
+      fetchPapersList(nextLang)
+        .then(setRecentPapers)
+        .catch(() => {});
+      if (paperRef.current) {
+        await openPaperById(paperRef.current.paper_id, nextLang);
+      }
+    },
+    [openPaperById]
+  );
+
   // Initial bootstrap: models catalog, recent papers, URL ?paperId= or ?import=, and VS Code bridge
   useEffect(() => {
+    const initLang = langRef.current;
+    updateEngineSettings({ default_lang: initLang }).catch(() => {});
     fetchModelsCatalog(false)
       .then(({ engines: list, catalog }) => {
         setEngines(list);
@@ -513,7 +621,7 @@ export const App: React.FC = () => {
       .then(setQueueState)
       .catch(() => {});
 
-    fetchPapersList()
+    fetchPapersList(initLang)
       .then((list) => {
         setRecentPapers(list);
         const params = new URLSearchParams(window.location.search);
@@ -522,7 +630,7 @@ export const App: React.FC = () => {
         if (qImport) {
           handleImportUrl(qImport);
         } else if (qPaperId) {
-          openPaperById(qPaperId);
+          openPaperById(qPaperId, initLang);
         }
       })
       .catch(() => {});
@@ -593,13 +701,14 @@ export const App: React.FC = () => {
   };
 
   const handleFileSelected = async (file: File) => {
+    const useLang = langRef.current;
     setLoadingPaper(true);
     setGlobalError(null);
     try {
-      const bundle = await uploadPaperFile(file);
-      applyLoadedBundle(bundle);
+      const bundle = await uploadPaperFile(file, useLang);
+      applyLoadedBundle(bundle, useLang);
     } catch (err: any) {
-      setGlobalError(err?.message || 'PDF 업로드 중 오류가 발생했습니다.');
+      setGlobalError(err?.message || 'PDF upload failed.');
     } finally {
       setLoadingPaper(false);
     }
@@ -609,7 +718,7 @@ export const App: React.FC = () => {
     if (!paper) return;
     closeStream();
     try {
-      const res = await stopPaperStream(paper.paper_id);
+      const res = await stopPaperStream(paper.paper_id, langRef.current);
       setPaper(res.paper);
     } catch {
       setPaper((prev) => (prev ? { ...prev, ai_status: 'paused' } : prev));
@@ -618,12 +727,12 @@ export const App: React.FC = () => {
 
   const handleResumeStream = () => {
     if (!paper) return;
-    startPaperStream(paper.paper_id, selectedEngine, false);
+    startPaperStream(paper.paper_id, selectedEngine, false, langRef.current);
   };
 
   const handleRestartStream = () => {
     if (!paper) return;
-    startPaperStream(paper.paper_id, selectedEngine, true);
+    startPaperStream(paper.paper_id, selectedEngine, true, langRef.current);
   };
 
   const handleSelectFromPdf = useCallback((sent: SentenceItem) => {
@@ -640,8 +749,8 @@ export const App: React.FC = () => {
     async (targetPaperId: string, refKey: string) => {
       setActiveCitationKey(refKey);
       setCitMetaError(null);
-      // Mark alert as read when user opens this citation
-      const jobId = `${targetPaperId}:${refKey}`;
+      const useLang = langRef.current;
+      const jobId = `${targetPaperId}:${refKey}:${useLang}`;
       setSummaryAlerts((prev) =>
         prev.map((a) =>
           a.id === jobId ? { ...a, unread: false, toastVisible: false } : a
@@ -654,13 +763,13 @@ export const App: React.FC = () => {
 
       setLoadingCitMeta(true);
       try {
-        const meta = await fetchCitationMetadata(targetPaperId, refKey);
+        const meta = await fetchCitationMetadata(targetPaperId, refKey, useLang);
         setCitationMetaCache((prev) => ({ ...prev, [refKey]: meta }));
         if (meta.cached_summary) {
           setCitationSummaries((prev) => ({ ...prev, [refKey]: meta.cached_summary! }));
         }
       } catch (err: any) {
-        setCitMetaError(err?.message || '인용 서지 정보를 가져오지 못했습니다.');
+        setCitMetaError(err?.message || 'Citation lookup failed.');
       } finally {
         setLoadingCitMeta(false);
       }
@@ -680,9 +789,10 @@ export const App: React.FC = () => {
     if (!paper || !activeCitationKey) return;
     const targetPaperId = paper.paper_id;
     const targetRefKey = activeCitationKey;
-    const jobId = `${targetPaperId}:${targetRefKey}`;
+    const useLang = langRef.current;
+    const jobId = `${targetPaperId}:${targetRefKey}:${useLang}`;
     const citedTitle =
-      citationMetaCache[targetRefKey]?.title || `[${targetRefKey}]번 인용 논문`;
+      citationMetaCache[targetRefKey]?.title || `[${targetRefKey}]`;
 
     if (summarizingKeys.has(jobId) && !force) return;
 
@@ -714,14 +824,15 @@ export const App: React.FC = () => {
         targetPaperId,
         targetRefKey,
         selectedEngine,
-        force
+        force,
+        useLang
       );
 
-      if (paperRef.current?.paper_id === targetPaperId) {
+      if (paperRef.current?.paper_id === targetPaperId && langRef.current === useLang) {
         setCitationSummaries((prev) => ({ ...prev, [targetRefKey]: sum }));
-        fetchCitationMetadata(targetPaperId, targetRefKey)
+        fetchCitationMetadata(targetPaperId, targetRefKey, useLang)
           .then((freshMeta) => {
-            if (paperRef.current?.paper_id === targetPaperId) {
+            if (paperRef.current?.paper_id === targetPaperId && langRef.current === useLang) {
               setCitationMetaCache((prev) => ({ ...prev, [targetRefKey]: freshMeta }));
             }
           })
@@ -730,7 +841,8 @@ export const App: React.FC = () => {
 
       const isCurrentlyViewingSameCitation =
         paperRef.current?.paper_id === targetPaperId &&
-        activeCitationKeyRef.current === targetRefKey;
+        activeCitationKeyRef.current === targetRefKey &&
+        langRef.current === useLang;
 
       setSummaryAlerts((prev) =>
         prev.map((a) =>
@@ -745,7 +857,7 @@ export const App: React.FC = () => {
         )
       );
     } catch (err: any) {
-      const msg = err?.message || '인용 논문 요약 생성에 실패했습니다.';
+      const msg = err?.message || 'Citation summary failed.';
       setCitSummaryErrors((prev) => ({ ...prev, [jobId]: msg }));
       setSummaryAlerts((prev) =>
         prev.map((a) =>
@@ -795,7 +907,7 @@ export const App: React.FC = () => {
       fetchQueueState()
         .then((next) => {
           setQueueState(next);
-          fetchPapersList()
+          fetchPapersList(langRef.current)
             .then(setRecentPapers)
             .catch(() => {});
         })
@@ -808,7 +920,9 @@ export const App: React.FC = () => {
   const visibleToasts = summaryAlerts.filter((a) => a.toastVisible);
 
   const activeJobId =
-    paper && activeCitationKey ? `${paper.paper_id}:${activeCitationKey}` : '';
+    paper && activeCitationKey ? `${paper.paper_id}:${activeCitationKey}:${lang}` : '';
+  const currentLangOption =
+    LANGUAGE_OPTIONS.find((o) => o.code === lang) || LANGUAGE_OPTIONS[0];
 
   return (
     <div
@@ -833,7 +947,7 @@ export const App: React.FC = () => {
         <div className="drop-overlay">
           <div className="drop-box">
             <Upload size={36} />
-            <p>여기에 논문 PDF 파일을 놓으면 AI 섹션 분리 및 실시간 번역이 시작됩니다</p>
+            <p>{t.dropOverlayText}</p>
           </div>
         </div>
       )}
@@ -843,11 +957,8 @@ export const App: React.FC = () => {
         <div className="brand-group">
           <div
             className="brand-logo"
-            onClick={() => {
-              closeStream();
-              setPaper(null);
-            }}
-            title="홈 화면으로 이동"
+            onClick={handleGoHome}
+            title={t.homeTitle}
           >
             <Sparkles size={17} />
             <span>PaperView</span>
@@ -879,7 +990,7 @@ export const App: React.FC = () => {
             onClick={() => fileInputRef.current?.click()}
           >
             <Upload size={14} />
-            <span>PDF 열기</span>
+            <span>{t.openPdf}</span>
           </button>
 
           <form
@@ -892,13 +1003,13 @@ export const App: React.FC = () => {
             <Globe size={13} className="muted-icon" />
             <input
               type="text"
-              placeholder="arXiv ID 또는 PDF URL (예: 1706.03762)"
+              placeholder={t.arxivPlaceholder}
               value={arxivInput}
               onChange={(e) => setArxivInput(e.target.value)}
             />
             {arxivInput.trim() && (
               <button type="submit" className="mini-go-btn">
-                열기
+                {t.openBtn}
               </button>
             )}
           </form>
@@ -913,15 +1024,16 @@ export const App: React.FC = () => {
                   setShowModelMenu(false);
                   setShowAlertsTray(false);
                   setShowUsageMenu(false);
+                  setShowLangMenu(false);
                 }}
               >
                 <BookMarked size={14} />
-                <span>최근 ({recentPapers.length})</span>
+                <span>{t.recentBtn(recentPapers.length)}</span>
               </button>
 
               {showLibraryMenu && (
                 <div className="library-popover" onMouseLeave={() => setShowLibraryMenu(false)}>
-                  <div className="lib-pop-header">최근 열어본 논문</div>
+                  <div className="lib-pop-header">{t.recentHeader}</div>
                   {recentPapers.map((item) => (
                     <button
                       key={item.paper_id}
@@ -936,8 +1048,11 @@ export const App: React.FC = () => {
                     >
                       <div className="lib-item-title">{item.title}</div>
                       <div className="lib-item-meta">
-                        {item.page_count}p · {item.sentence_count}문장 · 인용{' '}
-                        {item.reference_count}개
+                        {t.paperMeta(
+                          item.page_count,
+                          item.sentence_count,
+                          item.reference_count
+                        )}
                       </div>
                     </button>
                   ))}
@@ -947,6 +1062,55 @@ export const App: React.FC = () => {
           )}
 
           <div className="divider-v" />
+
+          {/* Target Output & UI Language Selector */}
+          <div className="library-dropdown-wrap">
+            <button
+              type="button"
+              className="nav-btn"
+              title={t.langMenuHeader}
+              onClick={() => {
+                setShowLangMenu((v) => !v);
+                setShowModelMenu(false);
+                setShowLibraryMenu(false);
+                setShowAlertsTray(false);
+                setShowUsageMenu(false);
+              }}
+            >
+              <Languages size={14} />
+              <span>{currentLangOption.nativeName}</span>
+              <ChevronDown size={12} style={{ opacity: 0.65 }} />
+            </button>
+
+            {showLangMenu && (
+              <div
+                className="library-popover"
+                style={{ minWidth: 210 }}
+                onMouseLeave={() => setShowLangMenu(false)}
+              >
+                <div className="lib-pop-header">{t.langMenuHeader}</div>
+                {LANGUAGE_OPTIONS.map((opt) => {
+                  const isCur = opt.code === lang;
+                  return (
+                    <button
+                      key={opt.code}
+                      type="button"
+                      className={`model-row-btn ${isCur ? 'current' : ''}`}
+                      onClick={() => handleChangeLanguage(opt.code)}
+                    >
+                      <span>
+                        <strong>{opt.nativeName}</strong>{' '}
+                        <span style={{ opacity: 0.65, fontSize: 11.5 }}>
+                          ({opt.englishName})
+                        </span>
+                      </span>
+                      {isCur && <CheckCircle2 size={14} className="check-accent" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           {/* Single Active Model Pill Button */}
           <div className="library-dropdown-wrap">
@@ -979,6 +1143,7 @@ export const App: React.FC = () => {
                     setShowLibraryMenu(false);
                     setShowAlertsTray(false);
                     setShowUsageMenu(false);
+                    setShowLangMenu(false);
                   }}
                 >
                   <span
@@ -1042,7 +1207,7 @@ export const App: React.FC = () => {
                     <button
                       type="button"
                       className="icon-tiny-btn"
-                      title="현재 PC의 사용 가능한 모델 목록 다시 조회"
+                      title={t.refreshModelsTitle}
                       onClick={handleRefreshModelsCatalog}
                     >
                       <RefreshCw size={12} className={refreshingModels ? 'spin' : ''} />
@@ -1050,7 +1215,7 @@ export const App: React.FC = () => {
                     <button
                       type="button"
                       className="icon-tiny-btn"
-                      title="닫기"
+                      title={t.close}
                       onClick={() => setShowModelMenu(false)}
                     >
                       <X size={13} />
@@ -1062,18 +1227,18 @@ export const App: React.FC = () => {
                   <div className="model-pop-body">
                     <div className="claude-model-kv">
                       <div>
-                        <span>현재 선택/설정 모델:</span>
+                        <span>{t.modelCurrent}</span>
                         <strong>{modelsCatalog.claude.effective_model}</strong>
                       </div>
                       {modelsCatalog.claude.detected_model && (
                         <div>
-                          <span>최근 실제 API 응답 ID:</span>
+                          <span>{t.modelDetected}</span>
                           <code>{modelsCatalog.claude.detected_model}</code>
                         </div>
                       )}
                     </div>
 
-                    <div className="lib-pop-header">추론 성능 (Reasoning Effort)</div>
+                    <div className="lib-pop-header">{t.reasoningEffort}</div>
                     <div className="effort-pills-grid">
                       {modelsCatalog.claude.efforts.map((eff) => {
                         const active = modelsCatalog.claude.selected_effort === eff.id;
@@ -1095,7 +1260,7 @@ export const App: React.FC = () => {
                     </div>
 
                     <div className="lib-pop-header">
-                      사용 가능한 Claude 모델 선택 ({modelsCatalog.claude.models.length}개 조회됨)
+                      {t.selectModelHeader('Claude', modelsCatalog.claude.models.length)}
                     </div>
                     <div className="models-scroll-list">
                       {groupModels(modelsCatalog.claude.models).map((grp) => (
@@ -1128,16 +1293,16 @@ export const App: React.FC = () => {
                   <div className="model-pop-body">
                     <div className="claude-model-kv">
                       <div>
-                        <span>현재 선택/설정 모델:</span>
+                        <span>{t.modelCurrent}</span>
                         <strong>{modelsCatalog.codex.effective_model}</strong>
                       </div>
                       <div>
-                        <span>인증 방식:</span>
-                        <span className="usage-zero-api">ChatGPT 로그인 (API 과금 차단)</span>
+                        <span>{t.authMethod}</span>
+                        <span className="usage-zero-api">{t.authZeroApi}</span>
                       </div>
                     </div>
 
-                    <div className="lib-pop-header">추론 성능 (Reasoning Effort)</div>
+                    <div className="lib-pop-header">{t.reasoningEffort}</div>
                     <div className="effort-pills-grid">
                       {modelsCatalog.codex.efforts.map((eff) => {
                         const active = modelsCatalog.codex.selected_effort === eff.id;
@@ -1159,7 +1324,7 @@ export const App: React.FC = () => {
                     </div>
 
                     <div className="lib-pop-header">
-                      사용 가능한 OpenAI Codex 모델 선택 ({modelsCatalog.codex.models.length}개)
+                      {t.selectModelHeader('OpenAI Codex', modelsCatalog.codex.models.length)}
                     </div>
                     <div className="models-scroll-list">
                       {groupModels(modelsCatalog.codex.models).map((grp) => (
@@ -1192,8 +1357,7 @@ export const App: React.FC = () => {
                     {engines.find((e) => e.id === 'antigravity')?.needs_key && (
                       <div className="agy-inline-key-box">
                         <p className="agy-pop-desc">
-                          <code>GEMINI_API_KEY</code>를 등록하면 실시간 API 모델 조회 및 Antigravity
-                          SDK 실행이 활성화됩니다.
+                          <code>GEMINI_API_KEY</code>
                         </p>
                         <form
                           className="hero-url-form"
@@ -1209,16 +1373,16 @@ export const App: React.FC = () => {
                         >
                           <input
                             type="password"
-                            placeholder="GEMINI_API_KEY 붙여넣기"
+                            placeholder="GEMINI_API_KEY"
                             value={geminiKeyInput}
                             onChange={(e) => setGeminiKeyInput(e.target.value)}
                           />
-                          <button type="submit">연결</button>
+                          <button type="submit">{t.openBtn}</button>
                         </form>
                       </div>
                     )}
 
-                    <div className="lib-pop-header">추론 성능 (Thinking Level)</div>
+                    <div className="lib-pop-header">{t.reasoningEffort}</div>
                     <div className="effort-pills-grid">
                       {modelsCatalog.antigravity.efforts.map((eff) => {
                         const active = modelsCatalog.antigravity.selected_effort === eff.id;
@@ -1242,7 +1406,7 @@ export const App: React.FC = () => {
                     </div>
 
                     <div className="lib-pop-header">
-                      사용 가능한 Antigravity 모델 ({modelsCatalog.antigravity.models.length}개)
+                      {t.selectModelHeader('Antigravity', modelsCatalog.antigravity.models.length)}
                     </div>
                     <div className="models-scroll-list">
                       {groupModels(modelsCatalog.antigravity.models).map((grp) => (
@@ -1306,11 +1470,12 @@ export const App: React.FC = () => {
                       setShowModelMenu(false);
                       setShowLibraryMenu(false);
                       setShowAlertsTray(false);
+                      setShowLangMenu(false);
                       if (next) {
                         loadUsageStatus(false);
-    fetchQueueState()
-      .then(setQueueState)
-      .catch(() => {});
+                        fetchQueueState()
+                          .then(setQueueState)
+                          .catch(() => {});
                       }
                     }}
                   >
@@ -1319,20 +1484,17 @@ export const App: React.FC = () => {
                     ) : (
                       <Activity size={13} />
                     )}
-                    <span>
-                      {remPct !== null ? `남은 한도 ${remPct}%` : '사용량 확인'}
-                    </span>
+                    <span>{t.remainingQuotaBtn(remPct)}</span>
                   </button>
 
                   {showUsageMenu && (
                     <div className="library-popover usage-popover">
                       <div className="alerts-tray-header">
-                        <span>AI 구독 사용량 · 남은 한도</span>
+                        <span>{t.usageHeader}</span>
                         <div className="row-center" style={{ gap: 4 }}>
                           <button
                             type="button"
                             className="icon-tiny-btn"
-                            title="실시간 남은 사용량 새로고침 (토큰 소모 없음)"
                             onClick={() => loadUsageStatus(true)}
                           >
                             <RefreshCw
@@ -1343,7 +1505,7 @@ export const App: React.FC = () => {
                           <button
                             type="button"
                             className="icon-tiny-btn"
-                            title="닫기"
+                            title={t.close}
                             onClick={() => setShowUsageMenu(false)}
                           >
                             <X size={13} />
@@ -1358,10 +1520,9 @@ export const App: React.FC = () => {
                               Claude{' '}
                               {usageStatus?.subscription_type
                                 ? usageStatus.subscription_type.toUpperCase()
-                                : '구독'}{' '}
-                              세션
+                                : 'SUB'}
                             </span>
-                            <span className="usage-zero-api">API 종량제 과금 없음</span>
+                            <span className="usage-zero-api">{t.usageZeroApi}</span>
                           </div>
                           {usageStatus?.email && (
                             <div className="usage-email-line">{usageStatus.email}</div>
@@ -1380,7 +1541,7 @@ export const App: React.FC = () => {
                                   <div className="usage-quota-head">
                                     <span className="usage-quota-label">{q.label}</span>
                                     <strong className={`usage-rem-badge ${barState}`}>
-                                      {rem}% 남음
+                                      {t.pctRemaining(rem)}
                                     </strong>
                                   </div>
                                   <div className="usage-bar-track">
@@ -1390,28 +1551,24 @@ export const App: React.FC = () => {
                                     />
                                   </div>
                                   <div className="usage-quota-foot">
-                                    <span>{used}% 사용됨</span>
-                                    {q.resets_at && <span>초기화: {q.resets_at}</span>}
+                                    <span>{t.pctUsed(used)}</span>
+                                    {q.resets_at && <span>{t.resetsAt(q.resets_at)}</span>}
                                   </div>
                                 </div>
                               );
                             })}
                           </div>
                         ) : refreshingUsage ? (
-                          <div className="alerts-empty">
-                            로컬 Claude CLI에서 남은 한도를 조회하는 중입니다...
-                          </div>
+                          <div className="alerts-empty">{t.usageLoading}</div>
                         ) : (
                           <div className="alerts-empty">
-                            {usageStatus?.error ||
-                              '새로고침 버튼을 눌러 현재 구독 세션의 남은 한도를 조회하세요.'}
+                            {usageStatus?.error || t.usageEmptyHint}
                           </div>
                         )}
 
                         {usageStatus?.activity_lines &&
                           usageStatus.activity_lines.length > 0 && (
                             <div className="usage-activity-box">
-                              <div className="usage-activity-title">로컬 CLI 최근 사용 통계</div>
                               {usageStatus.activity_lines.map((ln, idx) => (
                                 <div key={idx} className="usage-activity-line">
                                   {ln}
@@ -1422,10 +1579,10 @@ export const App: React.FC = () => {
 
                         <div className="usage-footer-meta">
                           <span>
-                            이번 실행 요청 {usageStatus?.local_session_requests ?? 0}회
+                            {t.sessionRequests(usageStatus?.local_session_requests ?? 0)}
                           </span>
                           {usageStatus?.checked_at && (
-                            <span>조회 시각 {usageStatus.checked_at}</span>
+                            <span>{t.checkedAt(usageStatus.checked_at)}</span>
                           )}
                         </div>
                       </div>
@@ -1440,13 +1597,13 @@ export const App: React.FC = () => {
           <button
             type="button"
             className={`nav-btn ${activeQueueCount > 0 ? 'has-unread' : ''}`}
-            title="여러 논문을 걸어두고 순차·예약 자동 번역하기"
             onClick={() => {
               setShowQueueModal(true);
               setShowModelMenu(false);
               setShowLibraryMenu(false);
               setShowAlertsTray(false);
               setShowUsageMenu(false);
+              setShowLangMenu(false);
               fetchQueueState()
                 .then(setQueueState)
                 .catch(() => {});
@@ -1459,7 +1616,7 @@ export const App: React.FC = () => {
             ) : (
               <ListChecks size={14} />
             )}
-            <span>번역 큐</span>
+            <span>{t.queueBtn}</span>
             {activeQueueCount > 0 && (
               <span className="alert-count-badge">{activeQueueCount}</span>
             )}
@@ -1472,12 +1629,12 @@ export const App: React.FC = () => {
               className={`nav-btn alert-toggle-btn ${
                 unreadAlertsCount > 0 ? 'has-unread' : ''
               }`}
-              title="인용 논문 백그라운드 요약 진행 및 완료 알림 토글"
               onClick={() => {
                 setShowAlertsTray((v) => !v);
                 setShowModelMenu(false);
                 setShowLibraryMenu(false);
                 setShowUsageMenu(false);
+                setShowLangMenu(false);
               }}
             >
               {runningAlertsCount > 0 ? (
@@ -1485,7 +1642,7 @@ export const App: React.FC = () => {
               ) : (
                 <Bell size={14} />
               )}
-              <span>요약 알림</span>
+              <span>{t.alertsBtn}</span>
               {(unreadAlertsCount > 0 || runningAlertsCount > 0) && (
                 <span className="alert-count-badge">
                   {unreadAlertsCount > 0 ? unreadAlertsCount : runningAlertsCount}
@@ -1496,7 +1653,7 @@ export const App: React.FC = () => {
             {showAlertsTray && (
               <div className="library-popover alerts-tray-popover">
                 <div className="alerts-tray-header">
-                  <span>인용 논문 요약 알림</span>
+                  <span>{t.alertsHeader}</span>
                   <button
                     type="button"
                     className="icon-tiny-btn"
@@ -1507,10 +1664,7 @@ export const App: React.FC = () => {
                 </div>
 
                 {summaryAlerts.length === 0 ? (
-                  <div className="alerts-empty">
-                    인용 번호 클릭 후 [간단 요약 보기]를 누르면 창을 닫아도 이곳에서 완료 알림을
-                    확인할 수 있습니다.
-                  </div>
+                  <div className="alerts-empty">{t.alertsEmpty}</div>
                 ) : (
                   <div className="alerts-list">
                     {summaryAlerts.map((item) => (
@@ -1521,15 +1675,15 @@ export const App: React.FC = () => {
                         <div className="alert-item-main">
                           {item.status === 'running' ? (
                             <span className="alert-status running">
-                              <span className="spinner-ring tiny" /> [{item.refKey}]번 논문 요약 중...
+                              <span className="spinner-ring tiny" /> {t.alertRunning(item.refKey)}
                             </span>
                           ) : item.status === 'done' ? (
                             <span className="alert-status done">
-                              ✨ [{item.refKey}]번 논문 요약이 완성되었어요
+                              {t.alertDone(item.refKey)}
                             </span>
                           ) : (
                             <span className="alert-status err">
-                              [{item.refKey}]번 논문 요약 실패
+                              {t.alertError(item.refKey)}
                             </span>
                           )}
                           <div className="alert-paper-sub">{item.paperTitle}</div>
@@ -1547,7 +1701,7 @@ export const App: React.FC = () => {
                               openCitationDrawerByRefKey(item.paperId, item.refKey);
                             }}
                           >
-                            보기
+                            {t.viewBtn}
                           </button>
                         )}
                       </div>
@@ -1563,17 +1717,16 @@ export const App: React.FC = () => {
               <button
                 type="button"
                 className={`nav-btn ${showChatPanel ? 'primary' : ''}`}
-                title="현재 논문에 대해 AI와 대화하기"
                 onClick={() => setShowChatPanel((v) => !v)}
               >
                 <MessageSquare size={14} />
-                <span>논문 채팅</span>
+                <span>{t.paperChatBtn}</span>
               </button>
 
               <button
                 type="button"
                 className={`icon-btn ${showPdfPane ? 'active-icon' : ''}`}
-                title={showPdfPane ? '좌측 PDF 패널 숨기기' : '좌측 PDF 패널 보이기'}
+                title={t.togglePdfTitle(showPdfPane)}
                 onClick={() => setShowPdfPane((v) => !v)}
               >
                 <Columns size={16} />
@@ -1584,7 +1737,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             className="icon-btn"
-            title={darkMode ? '라이트 모드로 전환' : '다크 모드로 전환'}
+            title={t.toggleThemeTitle(darkMode)}
             onClick={() => setDarkMode((v) => !v)}
           >
             {darkMode ? <Sun size={16} /> : <Moon size={16} />}
@@ -1592,7 +1745,7 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Floating Top-Right Completion Toasts (shown even when citation drawer is closed!) */}
+      {/* Floating Top-Right Completion Toasts */}
       {(visibleToasts.length > 0 || (runningAlertsCount > 0 && !activeCitationKey)) && (
         <div className="topright-toast-stack">
           {runningAlertsCount > 0 && !activeCitationKey && (
@@ -1602,33 +1755,33 @@ export const App: React.FC = () => {
               onClick={() => setShowAlertsTray((v) => !v)}
             >
               <div className="spinner-ring tiny" />
-              <span>백그라운드 인용 요약 진행 중 ({runningAlertsCount}건)</span>
+              <span>{t.bgRunningPill(runningAlertsCount)}</span>
             </button>
           )}
 
-          {visibleToasts.map((t) => (
-            <div key={t.id} className={`summary-ready-toast ${t.status}`}>
+          {visibleToasts.map((toastItem) => (
+            <div key={toastItem.id} className={`summary-ready-toast ${toastItem.status}`}>
               <div className="toast-content">
                 <strong>
-                  {t.status === 'done'
-                    ? `[${t.refKey}]번 논문 요약이 완성되었어요!`
-                    : `[${t.refKey}]번 논문 요약 오류`}
+                  {toastItem.status === 'done'
+                    ? t.alertDone(toastItem.refKey)
+                    : t.alertError(toastItem.refKey)}
                 </strong>
-                <p>{t.status === 'done' ? t.paperTitle : t.errorMsg}</p>
+                <p>{toastItem.status === 'done' ? toastItem.paperTitle : toastItem.errorMsg}</p>
               </div>
               <div className="toast-actions">
-                {t.status === 'done' && (
+                {toastItem.status === 'done' && (
                   <button
                     type="button"
                     className="toast-view-btn"
                     onClick={async () => {
-                      if (paper?.paper_id !== t.paperId) {
-                        await openPaperById(t.paperId);
+                      if (paper?.paper_id !== toastItem.paperId) {
+                        await openPaperById(toastItem.paperId);
                       }
-                      openCitationDrawerByRefKey(t.paperId, t.refKey);
+                      openCitationDrawerByRefKey(toastItem.paperId, toastItem.refKey);
                     }}
                   >
-                    열기
+                    {t.openBtn}
                   </button>
                 )}
                 <button
@@ -1637,11 +1790,11 @@ export const App: React.FC = () => {
                   onClick={() =>
                     setSummaryAlerts((prev) =>
                       prev.map((a) =>
-                        a.id === t.id ? { ...a, toastVisible: false } : a
+                        a.id === toastItem.id ? { ...a, toastVisible: false } : a
                       )
                     )
                   }
-                  title="알림 닫기"
+                  title={t.close}
                 >
                   <X size={14} />
                 </button>
@@ -1658,7 +1811,7 @@ export const App: React.FC = () => {
             <span>{globalError}</span>
           </div>
           <button type="button" onClick={() => setGlobalError(null)}>
-            닫기
+            {t.close}
           </button>
         </div>
       )}
@@ -1667,18 +1820,15 @@ export const App: React.FC = () => {
       {loadingPaper ? (
         <div className="center-loading-screen">
           <div className="spinner-ring large" />
-          <h3>논문 PDF 및 Figure · Table 구조를 분석하는 중입니다...</h3>
-          <p>곧바로 AI 섹션 분리와 실시간 번역이 시작됩니다</p>
+          <h3>{t.loadingPdfTitle}</h3>
+          <p>{t.loadingPdfSub}</p>
         </div>
       ) : !paper ? (
         <main className="welcome-landing">
           <div className="welcome-hero-card">
-            <div className="hero-badge">AI 핵심 요약 · 1단/2단 레이아웃 &amp; 표·그림 자동 인식 · 실시간 번역</div>
-            <h1>논문을 넣으면 AI가 핵심 요약과 섹션별 전문 번역을 실시간으로 보여줍니다</h1>
-            <p className="hero-sub">
-              <strong>1단(NeurIPS·ICLR) 및 2단(IEEE·CVPR) 컬럼</strong>과 <strong>Figure · Table</strong>을
-              페이지별로 자동 감지하고, 인용 논문은 arXiv 우선 탐색 및 백그라운드 요약을 제공합니다.
-            </p>
+            <div className="hero-badge">{t.heroBadge}</div>
+            <h1>{t.heroTitle}</h1>
+            <p className="hero-sub">{t.heroSub}</p>
 
             <div className="hero-actions-grid">
               <div
@@ -1686,12 +1836,12 @@ export const App: React.FC = () => {
                 onClick={() => fileInputRef.current?.click()}
               >
                 <FileText size={32} className="accent-icon" />
-                <h3>내 컴퓨터 PDF 논문 열기</h3>
-                <p>클릭하여 선택하거나 PDF 파일을 화면 어디에나 드래그 앤 드롭하세요</p>
+                <h3>{t.uploadCardTitle}</h3>
+                <p>{t.uploadCardSub}</p>
               </div>
 
               <div className="arxiv-import-card">
-                <h3>arXiv ID 또는 URL로 바로 시작</h3>
+                <h3>{t.arxivCardTitle}</h3>
                 <form
                   className="hero-url-form"
                   onSubmit={(e) => {
@@ -1701,15 +1851,15 @@ export const App: React.FC = () => {
                 >
                   <input
                     type="text"
-                    placeholder="예: 1706.03762 또는 https://arxiv.org/abs/..."
+                    placeholder={t.arxivCardPlaceholder}
                     value={arxivInput}
                     onChange={(e) => setArxivInput(e.target.value)}
                   />
-                  <button type="submit">불러오기</button>
+                  <button type="submit">{t.importBtn}</button>
                 </form>
 
                 <div className="sample-presets">
-                  <span>예시 논문 바로 열기:</span>
+                  <span>{t.sampleLabel}</span>
                   <button
                     type="button"
                     onClick={() => handleImportUrl('1706.03762')}
@@ -1728,7 +1878,7 @@ export const App: React.FC = () => {
 
             {recentPapers.length > 0 && (
               <div className="welcome-recent-section">
-                <h4>최근 열어본 논문</h4>
+                <h4>{t.recentHeader}</h4>
                 <div className="recent-cards-grid">
                   {recentPapers.slice(0, 6).map((rp) => (
                     <button
@@ -1739,7 +1889,7 @@ export const App: React.FC = () => {
                     >
                       <div className="rp-title">{rp.title}</div>
                       <div className="rp-meta">
-                        {rp.page_count}페이지 · {rp.sentence_count}문장 · 인용 {rp.reference_count}건
+                        {t.paperMeta(rp.page_count, rp.sentence_count, rp.reference_count)}
                       </div>
                     </button>
                   ))}
@@ -1765,6 +1915,7 @@ export const App: React.FC = () => {
                   sentences={paper.sentences}
                   activeSentenceId={activeSentenceId}
                   scrollSignal={pdfScrollSignal}
+                  lang={lang}
                   onSelectSentenceFromPdf={handleSelectFromPdf}
                 />
               </div>
@@ -1775,17 +1926,17 @@ export const App: React.FC = () => {
                   splitDraggingRef.current = true;
                   document.body.style.userSelect = 'none';
                 }}
-                title="드래그하여 좌우 화면 비율 조절"
               />
             </>
           )}
 
           <div className="split-right" style={{ flex: 1 }}>
             <ReaderPane
+              lang={lang}
               overview={paper.overview || null}
               loadingOverview={loadingOverview}
               onRefreshOverview={() =>
-                triggerPaperOverview(paper.paper_id, selectedEngine, true)
+                triggerPaperOverview(paper.paper_id, selectedEngine, true, lang)
               }
               sections={paper.sections}
               sentences={paper.sentences}
@@ -1801,6 +1952,8 @@ export const App: React.FC = () => {
               activeSentenceId={activeSentenceId}
               scrollSignal={readerScrollSignal}
               activeCitationRefKey={activeCitationKey}
+              loadingInsightIds={loadingInsightIds}
+              onRequestMediaInsight={handleRequestMediaInsight}
               onSelectSentenceFromReader={handleSelectFromReader}
               onClickCitation={handleClickCitation}
               onPauseStream={handlePauseStream}
@@ -1813,15 +1966,15 @@ export const App: React.FC = () => {
                 type="button"
                 className="floating-chat-fab"
                 onClick={() => setShowChatPanel(true)}
-                title="현재 논문에 대해 AI와 채팅하기"
               >
                 <MessageSquare size={16} />
-                <span>논문 질문하기</span>
+                <span>{t.askPaperFab}</span>
               </button>
             )}
 
             {activeCitationKey && (
               <CitationPopover
+                lang={lang}
                 refKey={activeCitationKey}
                 metadata={citationMetaCache[activeCitationKey] || null}
                 loadingMeta={loadingCitMeta}
@@ -1844,6 +1997,7 @@ export const App: React.FC = () => {
 
           {showChatPanel && (
             <PaperChatDrawer
+              lang={lang}
               paperId={paper.paper_id}
               paperTitle={paper.title}
               width={chatWidth}
@@ -1883,6 +2037,7 @@ export const App: React.FC = () => {
 
       {showQueueModal && (
         <QueueModal
+          lang={lang}
           queueState={queueState}
           selectedEngine={selectedEngine}
           selectedModelLabel={
@@ -1895,11 +2050,11 @@ export const App: React.FC = () => {
           recentPapers={recentPapers}
           onQueueUpdated={(next) => {
             setQueueState(next);
-            fetchPapersList()
+            fetchPapersList(lang)
               .then(setRecentPapers)
               .catch(() => {});
           }}
-          onOpenPaper={(pid) => openPaperById(pid)}
+          onOpenPaper={(pid) => openPaperById(pid, lang)}
           onClose={() => setShowQueueModal(false)}
         />
       )}

@@ -32,7 +32,7 @@ export function getApiBase(): string {
 
 async function handleJson<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    let msg = `요청 실패 (${res.status})`;
+    let msg = `Request failed (${res.status})`;
     try {
       const err = await res.json();
       if (err?.detail) {
@@ -54,9 +54,9 @@ export async function fetchEngines(): Promise<EngineInfo[]> {
 
 export async function fetchModelsCatalog(
   refresh = false
-): Promise<{ engines: EngineInfo[]; catalog: AllModelsCatalog }> {
+): Promise<{ engines: EngineInfo[]; catalog: AllModelsCatalog; selected_lang?: string }> {
   const res = await fetch(`${getApiBase()}/api/models?refresh=${refresh ? 'true' : 'false'}`);
-  return handleJson<{ engines: EngineInfo[]; catalog: AllModelsCatalog }>(res);
+  return handleJson<{ engines: EngineInfo[]; catalog: AllModelsCatalog; selected_lang?: string }>(res);
 }
 
 export async function fetchUsageStatus(refresh = false): Promise<UsageStatusResponse> {
@@ -72,28 +72,32 @@ export async function updateEngineSettings(payload: {
   codex_effort?: string;
   antigravity_model?: string;
   antigravity_thinking_level?: string;
-}): Promise<{ engines: EngineInfo[]; catalog: AllModelsCatalog }> {
+  default_lang?: string;
+}): Promise<{ engines: EngineInfo[]; catalog: AllModelsCatalog; selected_lang?: string }> {
   const res = await fetch(`${getApiBase()}/api/settings/engines`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return handleJson<{ engines: EngineInfo[]; catalog: AllModelsCatalog }>(res);
+  return handleJson<{ engines: EngineInfo[]; catalog: AllModelsCatalog; selected_lang?: string }>(res);
 }
 
-export async function fetchPapersList(): Promise<PaperSummaryItem[]> {
-  const res = await fetch(`${getApiBase()}/api/papers`);
+export async function fetchPapersList(lang?: string): Promise<PaperSummaryItem[]> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+  const res = await fetch(`${getApiBase()}/api/papers${qs}`);
   return handleJson<PaperSummaryItem[]>(res);
 }
 
-export async function fetchPaperBundle(paperId: string): Promise<LoadedPaperBundle> {
-  const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}`);
+export async function fetchPaperBundle(paperId: string, lang?: string): Promise<LoadedPaperBundle> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+  const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}${qs}`);
   return handleJson<LoadedPaperBundle>(res);
 }
 
-export async function uploadPaperFile(file: File): Promise<LoadedPaperBundle> {
+export async function uploadPaperFile(file: File, lang?: string): Promise<LoadedPaperBundle> {
   const form = new FormData();
   form.append('file', file);
+  if (lang) form.append('lang', lang);
   const res = await fetch(`${getApiBase()}/api/papers/upload`, {
     method: 'POST',
     body: form,
@@ -101,11 +105,11 @@ export async function uploadPaperFile(file: File): Promise<LoadedPaperBundle> {
   return handleJson<LoadedPaperBundle>(res);
 }
 
-export async function importPaperUrl(urlOrArxiv: string): Promise<LoadedPaperBundle> {
+export async function importPaperUrl(urlOrArxiv: string, lang?: string): Promise<LoadedPaperBundle> {
   const res = await fetch(`${getApiBase()}/api/papers/import-url`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url_or_arxiv: urlOrArxiv }),
+    body: JSON.stringify({ url_or_arxiv: urlOrArxiv, lang }),
   });
   return handleJson<LoadedPaperBundle>(res);
 }
@@ -114,17 +118,27 @@ export function getPaperPdfUrl(paperId: string): string {
   return `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/pdf`;
 }
 
-export function getPaperStreamUrl(paperId: string, engine: string, force = false): string {
+export function getPaperStreamUrl(
+  paperId: string,
+  engine: string,
+  force = false,
+  lang?: string
+): string {
   const qs = new URLSearchParams({
     engine,
     force: force ? 'true' : 'false',
   });
+  if (lang) qs.set('lang', lang);
   return `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/stream?${qs.toString()}`;
 }
 
-export async function stopPaperStream(paperId: string): Promise<{ paper: import('./types').PaperDocument }> {
+export async function stopPaperStream(
+  paperId: string,
+  lang?: string
+): Promise<{ paper: import('./types').PaperDocument }> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
   const res = await fetch(
-    `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/stop-stream`,
+    `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/stop-stream${qs}`,
     { method: 'POST' }
   );
   return handleJson<{ paper: import('./types').PaperDocument }>(res);
@@ -133,31 +147,53 @@ export async function stopPaperStream(paperId: string): Promise<{ paper: import(
 export async function generatePaperOverview(
   paperId: string,
   engine: string,
-  force = false
+  force = false,
+  lang?: string
 ): Promise<PaperOverview> {
   const res = await fetch(
     `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/overview`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine, force }),
+      body: JSON.stringify({ engine, force, lang }),
     }
   );
   return handleJson<PaperOverview>(res);
+}
+
+export async function generateMediaInsight(
+  paperId: string,
+  sentenceId: string,
+  engine: string,
+  force = false,
+  lang?: string
+): Promise<{ sentence_id: string; insight: string; engine?: string; model_name?: string }> {
+  const res = await fetch(
+    `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/sentences/${encodeURIComponent(sentenceId)}/media-insight`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine, force, lang }),
+    }
+  );
+  return handleJson<{ sentence_id: string; insight: string; engine?: string; model_name?: string }>(
+    res
+  );
 }
 
 export async function analyzeSentence(
   paperId: string,
   sentenceId: string,
   engine: string,
-  force = false
+  force = false,
+  lang?: string
 ): Promise<SentenceAnalysis> {
   const res = await fetch(
     `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/sentences/${encodeURIComponent(sentenceId)}/analyze`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine, force }),
+      body: JSON.stringify({ engine, force, lang }),
     }
   );
   return handleJson<SentenceAnalysis>(res);
@@ -166,14 +202,15 @@ export async function analyzeSentence(
 export async function analyzeBatchSentences(
   paperId: string,
   sentenceIds: string[],
-  engine: string
+  engine: string,
+  lang?: string
 ): Promise<SentenceAnalysis[]> {
   const res = await fetch(
     `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/sentences/analyze-batch`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sentence_ids: sentenceIds, engine }),
+      body: JSON.stringify({ sentence_ids: sentenceIds, engine, lang }),
     }
   );
   return handleJson<SentenceAnalysis[]>(res);
@@ -181,10 +218,12 @@ export async function analyzeBatchSentences(
 
 export async function fetchCitationMetadata(
   paperId: string,
-  refKey: string
+  refKey: string,
+  lang?: string
 ): Promise<CitationMetadataResponse> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
   const res = await fetch(
-    `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/citations/${encodeURIComponent(refKey)}`
+    `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/citations/${encodeURIComponent(refKey)}${qs}`
   );
   return handleJson<CitationMetadataResponse>(res);
 }
@@ -193,14 +232,15 @@ export async function summarizeCitation(
   paperId: string,
   refKey: string,
   engine: string,
-  force = false
+  force = false,
+  lang?: string
 ): Promise<CitationSummaryResponse> {
   const res = await fetch(
     `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/citations/${encodeURIComponent(refKey)}/summarize`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engine, force }),
+      body: JSON.stringify({ engine, force, lang }),
     }
   );
   return handleJson<CitationSummaryResponse>(res);
@@ -213,14 +253,16 @@ export function openExternalUrl(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
-export async function fetchPaperChatHistory(paperId: string): Promise<ChatMessage[]> {
-  const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/chat`);
+export async function fetchPaperChatHistory(paperId: string, lang?: string): Promise<ChatMessage[]> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+  const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/chat${qs}`);
   const data = await handleJson<{ messages: ChatMessage[] }>(res);
   return data.messages;
 }
 
-export async function clearPaperChatHistory(paperId: string): Promise<void> {
-  const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/chat`, {
+export async function clearPaperChatHistory(paperId: string, lang?: string): Promise<void> {
+  const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
+  const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/chat${qs}`, {
     method: 'DELETE',
   });
   await handleJson<{ messages: ChatMessage[] }>(res);
@@ -231,6 +273,7 @@ export async function streamPaperChatMessage(params: {
   message: string;
   contextSnippet?: string | null;
   engine: string;
+  lang?: string;
   responseStyle?: 'concise' | 'detailed';
   signal?: AbortSignal;
   onUserSaved?: (userMsg: ChatMessage, assistantId: string) => void;
@@ -247,6 +290,7 @@ export async function streamPaperChatMessage(params: {
         message: params.message,
         context_snippet: params.contextSnippet || null,
         engine: params.engine,
+        lang: params.lang,
         response_style: params.responseStyle || 'concise',
       }),
       signal: params.signal,
@@ -255,7 +299,7 @@ export async function streamPaperChatMessage(params: {
 
   if (!res.ok || !res.body) {
     const txt = await res.text().catch(() => '');
-    throw new Error(txt || `채팅 요청 실패 (${res.status})`);
+    throw new Error(txt || `Chat request failed (${res.status})`);
   }
 
   const reader = res.body.getReader();
@@ -284,7 +328,7 @@ export async function streamPaperChatMessage(params: {
     } else if (eventName === 'done' && params.onDone) {
       params.onDone(payload.assistant_message);
     } else if (eventName === 'error') {
-      throw new Error(payload.detail || '채팅 스트리밍 오류');
+      throw new Error(payload.detail || 'Chat stream error');
     }
   };
 
@@ -312,7 +356,8 @@ export async function fetchQueueState(): Promise<QueueStateResponse> {
 export async function enqueuePdfFiles(
   files: File[],
   engine: string,
-  force = false
+  force = false,
+  lang?: string
 ): Promise<QueueStateResponse> {
   const form = new FormData();
   for (const f of files) {
@@ -320,6 +365,7 @@ export async function enqueuePdfFiles(
   }
   form.append('engine', engine);
   form.append('force', force ? 'true' : 'false');
+  if (lang) form.append('lang', lang);
   const res = await fetch(`${getApiBase()}/api/queue/upload`, {
     method: 'POST',
     body: form,
@@ -330,12 +376,13 @@ export async function enqueuePdfFiles(
 export async function enqueueUrlsOrArxivs(
   urlsOrArxivs: string[],
   engine: string,
-  force = false
+  force = false,
+  lang?: string
 ): Promise<QueueStateResponse> {
   const res = await fetch(`${getApiBase()}/api/queue/urls`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ urls_or_arxivs: urlsOrArxivs, engine, force }),
+    body: JSON.stringify({ urls_or_arxivs: urlsOrArxivs, engine, force, lang }),
   });
   return handleJson<QueueStateResponse>(res);
 }
@@ -343,12 +390,13 @@ export async function enqueueUrlsOrArxivs(
 export async function enqueuePaperIds(
   paperIds: string[],
   engine: string,
-  force = false
+  force = false,
+  lang?: string
 ): Promise<QueueStateResponse> {
   const res = await fetch(`${getApiBase()}/api/queue/papers`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ paper_ids: paperIds, engine, force }),
+    body: JSON.stringify({ paper_ids: paperIds, engine, force, lang }),
   });
   return handleJson<QueueStateResponse>(res);
 }

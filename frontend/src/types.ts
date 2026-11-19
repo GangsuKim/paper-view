@@ -20,6 +20,7 @@ export interface SentenceItem {
   section: string;
   text: string;
   ko: string;
+  insight?: string | null;
   slash_en?: string | null;
   media_id?: string | null;
   media_label?: string | null;
@@ -117,6 +118,7 @@ export interface PaperOverview {
   method: string;
   contributions: string[];
   results: string;
+  lang?: string;
   engine?: string | null;
   model_name?: string | null;
 }
@@ -126,6 +128,7 @@ export interface PaperDocument {
   title: string;
   filename: string;
   page_count: number;
+  lang?: string;
   overview?: PaperOverview | null;
   sections: string[];
   sentences: SentenceItem[];
@@ -226,6 +229,7 @@ export interface QueueItem {
   title: string;
   filename: string;
   engine: string;
+  lang?: string;
   force_retranslate: boolean;
   status: 'queued' | 'running' | 'waiting_quota' | 'completed' | 'error' | 'cancelled' | string;
   progress: number;

@@ -12,9 +12,10 @@
 [![React](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=0f172a)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-SSE_Streaming-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![AI Engines](https://img.shields.io/badge/Local_CLI-Claude_%7C_Codex_%7C_Antigravity-d97706?style=flat-square)](#)
+[![Languages](https://img.shields.io/badge/Languages-KO_%7C_EN_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](#)
 [![VS Code](https://img.shields.io/badge/VS_Code-Extension_Ready-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white)](#)
 
-[**한국어**](README.md) · [**English**](README.en.md) · [Citation Quick Summary](#-one-click-citation-quick-summary) · [Key Features](#-key-features) · [Quick Start](#-30-second-quick-start) · [Acknowledgments](#-acknowledgments)
+[**한국어**](README.md) · [**English**](README.en.md) · [Citation Quick Summary](#-one-click-citation-quick-summary) · [Key Features](#-key-features) · [Quick Start](#-quick-start) · [Acknowledgments](#-acknowledgments)
 
 </div>
 
@@ -25,8 +26,9 @@
 **PaperView** is an open-source academic paper reader (Web App + VS Code Extension) that runs directly on your local **Claude Code CLI (`claude`)** and **OpenAI Codex CLI (`codex`)** subscription sessions without requiring separate pay-as-you-go API credits. Because the backend blocks `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` environment variables at the source, **you never incur accidental extra API charges, and all papers and translation caches remain 100% on your local disk (`.paperview_data/`)**.
 
 More than a simple PDF translator, PaperView is designed around how researchers actually read papers:
-1. The moment you open a paper, it presents a **one-line TL;DR, Key Contributions 1–4, Problem Definition, Proposed Method, and Key Results** right at the top of the reader, and
-2. Clicking any inline citation badge (`[13]`) lets you inspect the cited paper's **arXiv full-text PDF, Main Figure, and Quick Summary (`✨ 간단 요약 보기`)** in one click without ever leaving the paper.
+1. The moment you open a paper, it presents a **one-line TL;DR, Key Contributions 1–4, Problem Definition, Proposed Method, and Key Results** right at the top of the reader,
+2. For every **Figure and Table**, it synthesizes the body paragraphs citing that figure and its internal values to explain **what core claim the authors want to demonstrate**, and
+3. Clicking any inline citation badge (`[13]`) lets you inspect the cited paper's **arXiv full-text PDF, Main Figure, and Quick Summary (`✨ 간단 요약 보기`)** in one click without ever leaving the paper.
 
 ---
 
@@ -52,22 +54,26 @@ Whenever you encounter an unfamiliar prior work (`[13]`), there is no need to op
 - Before diving into a long manuscript, PaperView synthesizes the abstract, introduction, method, experiments, and conclusion into a top **One-Line Summary (TL;DR) + Key Contributions + Problem / Method / Results** card first.
 - As soon as the overview card finishes, full-text translation (`Abstract` → `1. Introduction` → ...) streams in real time directly underneath, and you can pause and click **Resume Translation (`이어서 번역`)** anytime.
 
-### 📖 2. Natural Academic Translation
+### 📖 2. Natural Multilingual Academic Translation (8 Languages for UI & AI)
 - **Accurate Reading Order**: Automatically strips review watermarks (`FOR REVIEW ONLY`), headers, and page-number noise while detecting single-column, two-column, and hybrid layouts per page so reading order never scrambles.
-- **Natural Scholarly Phrasing**: Preserves intact original English sentences above `→` translations while retaining natural domain terminology (`baseline`, `follow-up`, `ablation`, etc.) familiar to researchers.
-- **Bidirectional PDF Sync & Figure/Table Extraction**: Clicking any sentence highlights the exact corresponding line (`BBox`) in orange on the original PDF on the left, while Figures and Tables are automatically cropped at high resolution (`180–200 DPI`) inline with the text.
+- **8 Scholarly Languages & Localized UI**: Switch anytime between **한국어 · English · 日本語 · 简体中文 · 繁體中文 · Español · Deutsch · Français** in the top bar—both the app interface and AI overviews, translations, citation summaries, and chat adapt to natural academic phrasing in that language, with caches stored separately per language.
+- **Bidirectional PDF Sync**: Clicking any sentence or figure card jumps to and highlights the exact corresponding region (`BBox`) on the original PDF on the left with a clear focus ring.
 
-### 🌙 3. Scheduled Overnight Translation Queue
+### 💡 3. Figure & Table `Author's Core Claim` Explanations
+- Beyond literal caption translation, every inline high-DPI (`180–200 DPI`) Figure and Table combines **the body sentences citing that figure/table across the paper with internal plot/table labels and scores**.
+- Explains in 1–2 approachable sentences **why the authors included the figure and what key comparison or takeaway to look for** (generated automatically during streaming or in one click on existing papers).
+
+### 🌙 4. Scheduled Overnight Translation Queue
 - Queue up multiple PDF papers (or arXiv IDs) you plan to read tomorrow and set a **scheduled start time (e.g. `02:00`)** before going to sleep.
 - Even if your 5-hour subscription window fills up overnight, PaperView **saves a checkpoint at the last completed chunk and automatically resumes once your quota resets**, finishing every paper by morning.
 
-### 💬 4. Paper-Grounded Chat & Live Quota Check
+### 💬 5. Paper-Grounded Chat & Live Quota Check
 - **AI Chat (`논문 질문하기`)**: Answers clearly in 4–6 concise lines grounded in the full text, captions, and references (with a `Concise | Detailed` toggle) inside a freely drag-resizable chat drawer.
 - **Zero-Token Usage Gauge**: Switch your active model and reasoning effort (`low`–`max`) from the top bar and check your **remaining 5-hour session and weekly subscription quota (`%`)** in real time without spending a single token.
 
 ---
 
-## 🚀 30-Second Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites (One-Time)
 - **Python 3.10+** and **Node.js 18+** installed
@@ -97,6 +103,8 @@ cd paper-view
 chmod +x start.sh
 ./start.sh           # Custom port: ./start.sh --port 9000
 ```
+
+> **Launcher Flags**: `--port <number>` (default `8787`), `--host <address>` (default `127.0.0.1`), `--no-browser` (skip auto-opening browser)
 
 ### Using Inside VS Code / Antigravity IDE
 Open the project folder in VS Code and press **`F5`** (or launch the extension), then right-click any `.pdf` paper in the Explorer → select **`Open Paper with PaperView` (`PaperView로 논문 열기`)** to read directly inside an editor tab.

@@ -23,9 +23,11 @@ import {
   removeQueueItem,
   retryQueueItem,
 } from '../api';
+import { getUiStrings, type LangCode, type UiStrings } from '../i18n';
 import type { PaperSummaryItem, QueueItem, QueueStateResponse } from '../types';
 
 interface QueueModalProps {
+  lang?: LangCode;
   queueState: QueueStateResponse;
   selectedEngine: string;
   selectedModelLabel?: string;
@@ -37,27 +39,25 @@ interface QueueModalProps {
   onClose: () => void;
 }
 
-function statusBadgeInfo(item: QueueItem): { label: string; cls: string } {
+function statusBadgeInfo(item: QueueItem, t: UiStrings): { label: string; cls: string } {
   switch (item.status) {
     case 'running':
-      return { label: `번역 중 (${item.progress}%)`, cls: 'running' };
+      return { label: t.qStatusRunning(item.progress), cls: 'running' };
     case 'queued':
-      return {
-        label: item.progress > 0 ? `대기 중 (${item.progress}% 완료됨)` : '대기 중',
-        cls: 'queued',
-      };
+      return { label: t.qStatusQueued(item.progress), cls: 'queued' };
     case 'waiting_quota':
-      return { label: '한도 초기화 대기 중', cls: 'warn' };
+      return { label: t.qStatusQuota, cls: 'warn' };
     case 'completed':
-      return { label: '완료', cls: 'done' };
+      return { label: t.qStatusDone, cls: 'done' };
     case 'error':
-      return { label: '오류', cls: 'err' };
+      return { label: t.qStatusError, cls: 'err' };
     default:
       return { label: item.status, cls: 'queued' };
   }
 }
 
 export const QueueModal: React.FC<QueueModalProps> = ({
+  lang = 'ko',
   queueState,
   selectedEngine,
   selectedModelLabel,
@@ -68,6 +68,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
   onOpenPaper,
   onClose,
 }) => {
+  const t = getUiStrings(lang);
   const multiFileRef = useRef<HTMLInputElement | null>(null);
   const [batchUrlInput, setBatchUrlInput] = useState('');
   const [timeInput, setTimeInput] = useState('02:00');
@@ -85,10 +86,10 @@ export const QueueModal: React.FC<QueueModalProps> = ({
     setSubmitting(true);
     setLocalError(null);
     try {
-      const next = await enqueuePdfFiles(pdfs, selectedEngine, forceRetranslate);
+      const next = await enqueuePdfFiles(pdfs, selectedEngine, forceRetranslate, lang);
       onQueueUpdated(next);
     } catch (err: any) {
-      setLocalError(err?.message || 'PDF 큐 등록 실패');
+      setLocalError(err?.message || 'Queue error');
     } finally {
       setSubmitting(false);
     }
@@ -105,11 +106,11 @@ export const QueueModal: React.FC<QueueModalProps> = ({
     setSubmitting(true);
     setLocalError(null);
     try {
-      const next = await enqueueUrlsOrArxivs(targets, selectedEngine, forceRetranslate);
+      const next = await enqueueUrlsOrArxivs(targets, selectedEngine, forceRetranslate, lang);
       onQueueUpdated(next);
       setBatchUrlInput('');
     } catch (err: any) {
-      setLocalError(err?.message || 'URL/arXiv 큐 추가 실패');
+      setLocalError(err?.message || 'Queue error');
     } finally {
       setSubmitting(false);
     }
@@ -120,10 +121,10 @@ export const QueueModal: React.FC<QueueModalProps> = ({
     setSubmitting(true);
     setLocalError(null);
     try {
-      const next = await enqueuePaperIds(ids, selectedEngine, force);
+      const next = await enqueuePaperIds(ids, selectedEngine, force, lang);
       onQueueUpdated(next);
     } catch (err: any) {
-      setLocalError(err?.message || '논문 큐 추가 실패');
+      setLocalError(err?.message || 'Queue error');
     } finally {
       setSubmitting(false);
     }
@@ -136,7 +137,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
       const next = await controlTranslationQueue(payload);
       onQueueUpdated(next);
     } catch (err: any) {
-      setLocalError(err?.message || '큐 제어 실패');
+      setLocalError(err?.message || 'Queue error');
     }
   };
 
@@ -160,45 +161,43 @@ export const QueueModal: React.FC<QueueModalProps> = ({
         className="queue-modal-card"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="논문 자동 번역 큐 관리"
+        aria-label={t.queueTitle}
       >
-        {/* Header */}
         <div className="queue-modal-header">
           <div className="row-center" style={{ gap: 8 }}>
             <ListChecks size={18} className="sec-icon" />
             <div>
-              <h3>논문 예약 · 연속 번역 큐 (Queue)</h3>
+              <h3>{t.queueTitle}</h3>
               <p className="queue-header-sub">
-                여러 논문을 걸어두면 핵심 요약부터 전문 번역까지 순서대로 자동 실행됩니다
-                {selectedModelLabel ? ` · 현재 모델: ${selectedModelLabel}` : ''}
+                {t.queueSub}
+                {selectedModelLabel ? ` · ${selectedModelLabel}` : ''}
               </p>
             </div>
           </div>
-          <button type="button" className="icon-btn" onClick={onClose} title="닫기">
+          <button type="button" className="icon-btn" onClick={onClose} title={t.close}>
             <X size={18} />
           </button>
         </div>
 
         <div className="queue-modal-body">
-          {/* 1. Schedule & Execution Control Bar */}
           <div className="queue-schedule-bar">
             <div className="queue-sched-top">
               <div className="row-center" style={{ gap: 8, flexWrap: 'wrap' }}>
                 {queueState.paused ? (
-                  <span className="queue-status-pill paused">⏸ 일시정지됨</span>
+                  <span className="queue-status-pill paused">{t.qPaused}</span>
                 ) : queueState.scheduled_time_label ? (
                   <span className="queue-status-pill scheduled">
-                    🌙 {queueState.scheduled_time_label} 시작 예약됨
+                    {t.qScheduled(queueState.scheduled_time_label)}
                   </span>
                 ) : queueState.is_worker_busy ? (
                   <span className="queue-status-pill running">
-                    <span className="spinner-ring tiny" /> 실시간 순차 번역 중
+                    <span className="spinner-ring tiny" /> {t.qRunning}
                   </span>
                 ) : (
-                  <span className="queue-status-pill idle">대기 중 (추가 시 즉시 시작)</span>
+                  <span className="queue-status-pill idle">{t.qIdle}</span>
                 )}
 
-                <label className="queue-checkbox-label" title="새벽 중 Claude 5시간 구독 한도에 도달하더라도 멈춘 구간을 저장해 두고, 한도 초기화 후 자동으로 이어서 번역합니다.">
+                <label className="queue-checkbox-label">
                   <input
                     type="checkbox"
                     checked={queueState.auto_retry_on_quota}
@@ -206,7 +205,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                       handleControl({ auto_retry_on_quota: e.target.checked })
                     }
                   />
-                  <span>구독 한도 도달 시 초기화 후 자동 재개</span>
+                  <span>{t.qAutoRetry}</span>
                 </label>
               </div>
 
@@ -218,7 +217,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                     onClick={() => handleControl({ action: 'start_now' })}
                   >
                     <Play size={12} />
-                    <span>지금 바로 시작</span>
+                    <span>{t.qStartNow}</span>
                   </button>
                 )}
 
@@ -229,7 +228,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                     onClick={() => handleControl({ action: 'pause' })}
                   >
                     <Pause size={12} />
-                    <span>큐 일시정지</span>
+                    <span>{t.qPauseBtn}</span>
                   </button>
                 )}
 
@@ -238,10 +237,9 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                     type="button"
                     className="stream-ctrl-btn"
                     onClick={() => handleControl({ action: 'clear_done' })}
-                    title="완료·오류 항목 목록에서 비우기"
                   >
                     <Trash2 size={12} />
-                    <span>완료 정리</span>
+                    <span>{t.qClearDone}</span>
                   </button>
                 )}
               </div>
@@ -249,7 +247,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
 
             <div className="queue-sched-time-row">
               <Clock size={13} className="muted-icon" />
-              <span>취침·외출 예약 시작 시각:</span>
+              <span>{t.qScheduleLabel}</span>
               <input
                 type="time"
                 className="queue-time-input"
@@ -261,7 +259,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                 className="mini-sched-btn"
                 onClick={() => handleControl({ scheduled_time: timeInput })}
               >
-                예약 걸기
+                {t.qSetSchedule}
               </button>
               {queueState.scheduled_time_label && (
                 <button
@@ -269,13 +267,12 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                   className="mini-sched-btn clear"
                   onClick={() => handleControl({ scheduled_time: '' })}
                 >
-                  예약 해제
+                  {t.qClearSchedule}
                 </button>
               )}
             </div>
           </div>
 
-          {/* 2. Batch Enqueue Section (Multi-PDF + Batch arXiv/URL) */}
           <div className="queue-add-grid">
             <div
               className={`queue-dropzone ${dragActive ? 'drag' : ''}`}
@@ -308,15 +305,15 @@ export const QueueModal: React.FC<QueueModalProps> = ({
               />
               <Upload size={20} className="sec-icon" />
               <div>
-                <strong>PDF 논문 여러 개 한 번에 추가</strong>
-                <p>클릭하여 여러 파일을 선택하거나 여기에 드래그 앤 드롭하세요</p>
+                <strong>{t.qDropTitle}</strong>
+                <p>{t.qDropSub}</p>
               </div>
             </div>
 
             <form className="queue-url-box" onSubmit={handleAddBatchUrls}>
               <textarea
                 rows={2}
-                placeholder="arXiv ID 또는 PDF URL 여러 개 입력 (쉼표 또는 줄바꿈 구분, 예: 1706.03762, 2403.07636)"
+                placeholder={t.qUrlPlaceholder}
                 value={batchUrlInput}
                 onChange={(e) => setBatchUrlInput(e.target.value)}
               />
@@ -327,7 +324,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                     checked={forceRetranslate}
                     onChange={(e) => setForceRetranslate(e.target.checked)}
                   />
-                  <span>이미 번역된 논문도 처음부터 재번역</span>
+                  <span>{t.qForceRetranslate}</span>
                 </label>
                 <button
                   type="submit"
@@ -335,7 +332,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                   disabled={submitting || !batchUrlInput.trim()}
                 >
                   <Plus size={13} />
-                  <span>{submitting ? '추가 중...' : '큐에 추가'}</span>
+                  <span>{submitting ? t.qAdding : t.qAddBtn}</span>
                 </button>
               </div>
             </form>
@@ -349,8 +346,11 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                   className="section-chip"
                   onClick={() => handleEnqueuePaperIds([currentPaperId], forceRetranslate)}
                 >
-                  + 현재 열린 논문 큐에 추가 ({(currentPaperTitle || '').slice(0, 28)}
-                  {(currentPaperTitle || '').length > 28 ? '...' : ''})
+                  {t.qAddCurrent(
+                    `${(currentPaperTitle || '').slice(0, 28)}${
+                      (currentPaperTitle || '').length > 28 ? '...' : ''
+                    }`
+                  )}
                 </button>
               )}
               {unfinishedRecent.length > 0 && (
@@ -364,7 +364,7 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                     )
                   }
                 >
-                  + 미완료 최근 논문 {unfinishedRecent.length}개 일괄 추가
+                  {t.qAddUnfinished(unfinishedRecent.length)}
                 </button>
               )}
             </div>
@@ -372,21 +372,15 @@ export const QueueModal: React.FC<QueueModalProps> = ({
 
           {localError && <div className="pane-error">{localError}</div>}
 
-          {/* 3. Queue Items List */}
           <div className="queue-list-section">
-            <div className="lib-pop-header">
-              큐 대기열 목록 ({queueState.items.length}건)
-            </div>
+            <div className="lib-pop-header">{t.qListHeader(queueState.items.length)}</div>
 
             {queueState.items.length === 0 ? (
-              <div className="queue-empty-box">
-                등록된 논문이 없습니다. 자기 전에 읽고 싶은 PDF 논문들을 여러 개 올려두시면
-                요약·Contribution부터 전체 본문 번역까지 밤새 자동으로 완료해 둡니다.
-              </div>
+              <div className="queue-empty-box">{t.qEmpty}</div>
             ) : (
               <div className="queue-items-scroll">
                 {queueState.items.map((item, idx) => {
-                  const badge = statusBadgeInfo(item);
+                  const badge = statusBadgeInfo(item, t);
                   const canMove =
                     item.status === 'queued' || item.status === 'waiting_quota';
 
@@ -395,6 +389,11 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                       <div className="queue-item-main">
                         <div className="queue-item-top">
                           <span className="queue-seq-num">#{idx + 1}</span>
+                          {item.lang && (
+                            <span className="model-sub-pill" style={{ fontSize: 10 }}>
+                              {item.lang.toUpperCase()}
+                            </span>
+                          )}
                           <strong className="queue-item-title" title={item.title}>
                             {item.title}
                           </strong>
@@ -429,10 +428,9 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                             onOpenPaper(item.paper_id);
                             onClose();
                           }}
-                          title="이 논문 화면 열기"
                         >
                           <ExternalLink size={11} />
-                          <span>열기</span>
+                          <span>{t.openBtn}</span>
                         </button>
 
                         {canMove && (
@@ -444,7 +442,6 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                               onClick={async () =>
                                 onQueueUpdated(await moveQueueItem(item.id, 'up'))
                               }
-                              title="순서 위로"
                             >
                               <ArrowUp size={12} />
                             </button>
@@ -455,7 +452,6 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                               onClick={async () =>
                                 onQueueUpdated(await moveQueueItem(item.id, 'down'))
                               }
-                              title="순서 아래로"
                             >
                               <ArrowDown size={12} />
                             </button>
@@ -469,7 +465,6 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                             onClick={async () =>
                               onQueueUpdated(await retryQueueItem(item.id))
                             }
-                            title="다시 시도"
                           >
                             <RotateCcw size={12} />
                           </button>
@@ -481,7 +476,6 @@ export const QueueModal: React.FC<QueueModalProps> = ({
                           onClick={async () =>
                             onQueueUpdated(await removeQueueItem(item.id))
                           }
-                          title="큐에서 제거 / 중단"
                         >
                           <X size={13} />
                         </button>

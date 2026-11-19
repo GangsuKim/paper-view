@@ -10,6 +10,11 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
+from .lang_profiles import (
+    get_lang_profile,
+    list_supported_languages,
+    normalize_lang_code,
+)
 from .models import (
     ChatMessage,
     CitationSummaryResponse,
@@ -28,28 +33,46 @@ from .models import (
 from .storage import DATA_DIR, ensure_dirs
 
 SYSTEM_PROMPT = (
-    "You are PaperView AI, an expert academic research paper reading assistant "
-    "(similar to Moonlight). Always output strictly valid JSON matching the requested schema, "
-    "with natural, accurate Korean explanations and faithful technical terminology."
+    "You are PaperView AI, an expert multilingual academic research paper reading assistant. "
+    "Always output strictly valid JSON matching the requested schema in the exact target language "
+    "requested by the prompt, preserving mathematical precision and domain terminology."
 )
 
-CHAT_SYSTEM_PROMPT = (
-    "You are PaperView AI, a concise academic research paper Q&A partner. "
-    "Answer in Korean strictly grounded in the provided paper. "
-    "CRITICAL LENGTH RULE: Keep answers SHORT, CRISP, and TO THE POINT by default — "
-    "start immediately with a 1–2 sentence core takeaway (no greetings, no filler intro/outro), "
-    "followed by at most 2–3 short single-sentence bullet points only if needed (aim for 3–6 lines total). "
-    "Do NOT write long essays or big headings (#, ##) unless the user explicitly requests a detailed explanation. "
-    "Cite [p.N] or [1] inline briefly."
-)
 
-CHAT_SYSTEM_PROMPT_DETAILED = (
-    "You are PaperView AI, an expert academic research paper Q&A partner. "
-    "Answer the user's questions accurately and clearly in Korean based on the provided paper full text, "
-    "figures, tables, equations, and references. Use clean Markdown (bullet points, bold key terms, "
-    "structured sections), cite [p.N] or reference numbers like [1] when relevant, and keep technical "
-    "terms natural for Korean researchers."
-)
+def build_system_prompt(lang: Optional[str] = None) -> str:
+    prof = get_lang_profile(lang)
+    return (
+        f"You are PaperView AI, an expert academic research paper reading assistant. "
+        f"Always output strictly valid JSON matching the requested schema, with natural, accurate "
+        f"{prof.english_name} ({prof.native_name}) explanations and faithful technical terminology."
+    )
+
+
+def build_chat_system_prompt(lang: Optional[str] = None, detailed: bool = False) -> str:
+    prof = get_lang_profile(lang)
+    if detailed:
+        return (
+            f"You are PaperView AI, an expert academic research paper Q&A partner. "
+            f"Answer the user's questions accurately and clearly in {prof.english_name} ({prof.native_name}) "
+            f"(unless the user explicitly asks in another language) based on the provided paper full text, "
+            f"figures, tables, equations, and references. Use clean Markdown (bullet points, bold key terms, "
+            f"structured sections), cite [p.N] or reference numbers like [1] when relevant, and keep technical "
+            f"terms natural for {prof.english_name} researchers."
+        )
+    return (
+        f"You are PaperView AI, a concise academic research paper Q&A partner. "
+        f"Answer in {prof.english_name} ({prof.native_name}) (unless the user explicitly asks in another language) "
+        f"strictly grounded in the provided paper. "
+        f"CRITICAL LENGTH RULE: Keep answers SHORT, CRISP, and TO THE POINT by default — "
+        f"start immediately with a 1–2 sentence core takeaway (no greetings, no filler intro/outro), "
+        f"followed by at most 2–3 short single-sentence bullet points only if needed (aim for 3–6 lines total). "
+        f"Do NOT write long essays or big headings (#, ##) unless the user explicitly requests a detailed explanation. "
+        f"Cite [p.N] or [1] inline briefly."
+    )
+
+
+CHAT_SYSTEM_PROMPT = build_chat_system_prompt("ko", detailed=False)
+CHAT_SYSTEM_PROMPT_DETAILED = build_chat_system_prompt("ko", detailed=True)
 
 _SESSION_REQUEST_COUNT: int = 0
 _SESSION_TOTAL_TOKENS: int = 0
@@ -87,6 +110,11 @@ def save_local_settings(updates: dict[str, Any]) -> dict[str, Any]:
     cur.update(updates)
     _settings_path().write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
     return cur
+
+
+def get_effective_default_lang() -> str:
+    settings = load_local_settings()
+    return normalize_lang_code(settings.get("default_lang"))
 
 
 def get_effective_gemini_key() -> Optional[str]:
@@ -728,7 +756,12 @@ class _AntigravityPool:
 _agy_pool = _AntigravityPool()
 
 
-async def _run_claude_once(claude_bin: str, prompt: str, timeout: float) -> tuple[int, str, str]:
+async def _run_claude_once(
+    claude_bin: str,
+    prompt: str,
+    timeout: float,
+    system_prompt: Optional[str] = None,
+) -> tuple[int, str, str]:
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
     env.pop("CLAUDE_CODE_ENTRYPOINT", None)
@@ -754,7 +787,7 @@ async def _run_claude_once(claude_bin: str, prompt: str, timeout: float) -> tupl
         "--tools",
         "",
         "--system-prompt",
-        SYSTEM_PROMPT,
+        system_prompt or SYSTEM_PROMPT,
     ]
 
     proc = await asyncio.create_subprocess_exec(
@@ -799,14 +832,18 @@ async def _run_claude_once(claude_bin: str, prompt: str, timeout: float) -> tupl
     )
 
 
-async def _call_claude_cli(prompt: str, timeout: float = 90.0) -> str:
+async def _call_claude_cli(
+    prompt: str,
+    timeout: float = 90.0,
+    system_prompt: Optional[str] = None,
+) -> str:
     claude_bin = find_claude_binary()
     if not claude_bin:
         raise RuntimeError("로컬에서 Claude CLI 실행 파일을 찾을 수 없습니다.")
 
     # Strictly use local Claude Code OAuth login session (never fall back to paid ANTHROPIC_API_KEY)
     rc, out_text, err_text = await _run_claude_once(
-        claude_bin, prompt, timeout=timeout
+        claude_bin, prompt, timeout=timeout, system_prompt=system_prompt
     )
     if rc == 0 and out_text:
         return out_text
@@ -815,10 +852,16 @@ async def _call_claude_cli(prompt: str, timeout: float = 90.0) -> str:
     raise RuntimeError(f"Claude CLI 호출 실패: {detail[:300]}")
 
 
-async def _call_codex_cli(prompt: str, timeout: float = 120.0) -> str:
+async def _call_codex_cli(
+    prompt: str,
+    timeout: float = 120.0,
+    system_prompt: Optional[str] = None,
+) -> str:
     """Execute prompt non-interactively via OpenAI Codex CLI (`codex exec`) using local ChatGPT OAuth login."""
     chunks: list[str] = []
-    async for delta, _ in _stream_codex_cli(prompt, system_prompt=SYSTEM_PROMPT, timeout=timeout):
+    async for delta, _ in _stream_codex_cli(
+        prompt, system_prompt=system_prompt or SYSTEM_PROMPT, timeout=timeout
+    ):
         if delta:
             chunks.append(delta)
     res = "".join(chunks).strip()
@@ -835,7 +878,11 @@ def resolve_display_model_for_engine(used_engine: str) -> tuple[str, str]:
     return get_effective_antigravity_model(), get_effective_antigravity_thinking()
 
 
-async def run_local_llm(prompt: str, engine: str = "auto") -> tuple[str, str]:
+async def run_local_llm(
+    prompt: str,
+    engine: str = "auto",
+    system_prompt: Optional[str] = None,
+) -> tuple[str, str]:
     """
     Execute prompt on the chosen local engine ('claude' | 'codex' | 'antigravity' | 'auto').
     Returns (response_text, resolved_engine_id).
@@ -870,11 +917,11 @@ async def run_local_llm(prompt: str, engine: str = "auto") -> tuple[str, str]:
     for eng in order:
         try:
             if eng == "claude":
-                res = await _call_claude_cli(prompt)
+                res = await _call_claude_cli(prompt, system_prompt=system_prompt)
                 if res:
                     return res, "claude"
             elif eng == "codex":
-                res = await _call_codex_cli(prompt)
+                res = await _call_codex_cli(prompt, system_prompt=system_prompt)
                 if res:
                     return res, "codex"
             elif eng == "antigravity":
@@ -930,33 +977,38 @@ async def analyze_sentence_sense_groups(
     section: str,
     sentence: SentenceItem,
     engine: str = "auto",
+    lang: Optional[str] = None,
 ) -> SentenceAnalysis:
-    prompt = f"""다음 영어 학술 논문 문장을 '의미 단위(Sense Groups / 직독직해 끊어읽기)'로 분해하고 한국어 해석을 작성해주세요.
+    prof = get_lang_profile(lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+    prompt = f"""Break down the following academic English sentence into meaningful sense groups and provide accurate explanations in **{target_desc}**.
 
-[논문 제목]: {paper_title}
-[섹션]: {section}
-[원문 문장]:
+[Paper Title]: {paper_title}
+[Section]: {section}
+[Sentence]:
 {sentence.text}
 
-요구사항:
-1. `chunks`: 원문 문장의 어순을 그대로 유지하면서 의미 단위(구/절 단위, 보통 2~7개 청크)로 자연스럽게 끊어주세요. 모든 `en` 조각을 순서대로 이어붙이면 원문 전체가 되어야 합니다.
-2. 각 청크의 `ko`는 해당 영어 조각에 대응하는 간결하고 정확한 직독직해 한국어 뜻입니다.
-3. 각 청크의 `role`은 짧은 문법/의미 역할 태그입니다 (예: "배경/전제", "주어부", "핵심 동사", "목적어", "수식절", "결과/효과").
-4. `natural_ko`: 학술 논문 문체에 맞는 매끄럽고 자연스러운 전체 한국어 번역입니다.
-5. `key_terms`: 문장 내 중요한 전문 용어가 있다면 1~3개만 간단히 설명해주세요 (없으면 빈 배열 `[]`).
+Requirements:
+1. `chunks`: Split the original sentence in order into natural sense groups (2–7 phrases/clauses). Concatenating all `en` chunks must reproduce the original sentence.
+2. Each chunk's `ko` field MUST be written in **{target_desc}** (concise phrase-by-phrase gloss).
+3. Each chunk's `role` is a short grammatical/semantic role tag in **{target_desc}**.
+4. `natural_ko`: Smooth, natural academic translation/explanation of the full sentence in **{target_desc}**.
+5. `key_terms`: Up to 1–3 important technical terms with concise definitions in **{target_desc}** (or `[]`).
 
-반드시 아래 JSON 형식으로만 응답하세요 (코드블록 외 다른 설명 금지):
+Respond ONLY with valid JSON (no extra text outside JSON):
 {{
   "chunks": [
-    {{"en": "영어 의미 단위 조각", "ko": "직독직해 뜻", "role": "역할"}}
+    {{"en": "English sense group", "ko": "{target_desc} gloss", "role": "role in {target_desc}"}}
   ],
-  "natural_ko": "매끄러운 전체 한국어 해석",
+  "natural_ko": "Full natural {target_desc} translation",
   "key_terms": [
-    {{"term": "전문 용어", "meaning": "짧은 핵심 설명"}}
+    {{"term": "technical term", "meaning": "concise explanation in {target_desc}"}}
   ]
 }}"""
 
-    raw_out, used_engine = await run_local_llm(prompt, engine=engine)
+    raw_out, used_engine = await run_local_llm(
+        prompt, engine=engine, system_prompt=build_system_prompt(prof.code)
+    )
     data = _extract_json_obj(raw_out)
 
     chunks = [
@@ -980,6 +1032,7 @@ async def analyze_sentence_sense_groups(
     return SentenceAnalysis(
         sentence_id=sentence.id,
         engine=used_engine,
+        lang=prof.code,
         chunks=chunks,
         natural_ko=str(data.get("natural_ko") or "").strip(),
         key_terms=key_terms,
@@ -990,32 +1043,37 @@ async def analyze_batch_sentences(
     paper_title: str,
     sentences: list[SentenceItem],
     engine: str = "auto",
+    lang: Optional[str] = None,
 ) -> list[SentenceAnalysis]:
     """Analyze multiple sentences (e.g. a paragraph/section slice) in a single local AI call."""
     if not sentences:
         return []
+    prof = get_lang_profile(lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
     items_payload = [{"id": s.id, "section": s.section, "text": s.text} for s in sentences[:8]]
-    prompt = f"""다음 영어 학술 논문 문장들을 각각 '의미 단위(Sense Groups / 직독직해 끊어읽기)'로 분해하고 한국어 해석을 작성해주세요.
+    prompt = f"""Break down each of the following academic English sentences into sense groups and write all glosses/explanations in **{target_desc}**.
 
-[논문 제목]: {paper_title}
-[대상 문장 목록]:
+[Paper Title]: {paper_title}
+[Target Sentences]:
 {json.dumps(items_payload, ensure_ascii=False, indent=2)}
 
-반드시 아래 JSON 배열 형식으로만 응답하세요:
+Respond ONLY with a valid JSON array:
 [
   {{
-    "sentence_id": "문장 id 그대로",
+    "sentence_id": "exact id",
     "chunks": [
-      {{"en": "영어 의미 단위 조각", "ko": "직독직해 뜻", "role": "역할"}}
+      {{"en": "English sense group", "ko": "{target_desc} gloss", "role": "role in {target_desc}"}}
     ],
-    "natural_ko": "전체 한국어 자연스러운 해석",
+    "natural_ko": "Full natural {target_desc} translation",
     "key_terms": [
-      {{"term": "용어", "meaning": "짧은 설명"}}
+      {{"term": "term", "meaning": "short explanation in {target_desc}"}}
     ]
   }}
 ]"""
 
-    raw_out, used_engine = await run_local_llm(prompt, engine=engine)
+    raw_out, used_engine = await run_local_llm(
+        prompt, engine=engine, system_prompt=build_system_prompt(prof.code)
+    )
     arr = _extract_json_obj(raw_out)
     if isinstance(arr, dict) and "items" in arr:
         arr = arr["items"]
@@ -1046,6 +1104,7 @@ async def analyze_batch_sentences(
             SentenceAnalysis(
                 sentence_id=sid,
                 engine=used_engine,
+                lang=prof.code,
                 chunks=chunks or [SenseChunk(en=by_id[sid].text, ko=str(item.get("natural_ko", "")))],
                 natural_ko=str(item.get("natural_ko") or "").strip(),
                 key_terms=key_terms,
@@ -1064,41 +1123,48 @@ async def summarize_cited_paper(
     engine: str = "auto",
     main_figure_url: Optional[str] = None,
     main_figure_caption: Optional[str] = None,
+    lang: Optional[str] = None,
 ) -> CitationSummaryResponse:
+    prof = get_lang_profile(lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+    lbl_bg, lbl_method, lbl_res = prof.citation_point_labels
     citing_text = (
         "\n".join(f"- (p.{c.page}, {c.section}): {c.text}" for c in citing_contexts[:5])
         if citing_contexts
-        else "(본문 내 직접 매칭된 인용 문장 없음)"
+        else "(No direct inline citing sentence matched)"
     )
 
-    prompt = f"""사용자가 논문을 읽다가 인용 번호 [{ref_entry.ref_key}]를 클릭해 '간단 요약'을 요청했습니다.
-제공된 인용 논문 텍스트와 현재 논문의 인용 문맥을 바탕으로 핵심만 명쾌하게 한국어로 요약해주세요.
+    prompt = f"""The user clicked inline citation [{ref_entry.ref_key}] while reading an academic paper and requested a Quick Summary.
+Based on the cited paper content and the current paper's citing context below, write a clear, crisp summary strictly in **{target_desc}**.
+{prof.overview_style_guide}
 
-[현재 읽고 있는 논문]: {current_paper_title}
-[현재 논문에서 [{ref_entry.ref_key}]를 인용한 문장들]:
+[Current Paper Being Read]: {current_paper_title}
+[Sentences in Current Paper Citing [{ref_entry.ref_key}]]:
 {citing_text}
 
-[인용된 논문 서지 정보]:
-- 제목: {ref_entry.title or 'Unknown'}
-- 저자: {', '.join(ref_entry.authors) if ref_entry.authors else 'Unknown'}
-- 연도/학회: {ref_entry.year or 'Unknown'} / {ref_entry.venue or 'Unknown'}
-- 원문 참조 문자열: {ref_entry.raw_text}
+[Cited Paper Metadata]:
+- Title: {ref_entry.title or 'Unknown'}
+- Authors: {', '.join(ref_entry.authors) if ref_entry.authors else 'Unknown'}
+- Year / Venue: {ref_entry.year or 'Unknown'} / {ref_entry.venue or 'Unknown'}
+- Raw Reference: {ref_entry.raw_text}
 
-[확보된 인용 논문 텍스트 ({source_label})]:
+[Retrieved Cited Paper Text ({source_label})]:
 {cited_content[:14000]}
 
-반드시 아래 JSON 형식으로만 응답하세요 (코드블록 외 다른 텍스트 금지):
+Respond ONLY in the following valid JSON format (no extra text outside JSON; write all string values in **{target_desc}**):
 {{
-  "tldr": "이 인용 논문이 무엇을 제안/해결한 논문인지 한 문장 핵심 요약 (한국어)",
+  "tldr": "One-sentence core summary in {target_desc} of what this cited paper proposes/solves",
   "summary_points": [
-    "문제의식/배경: ...",
-    "핵심 방법/아이디어: ...",
-    "주요 결과 및 의의: ..."
+    "{lbl_bg}: ...",
+    "{lbl_method}: ...",
+    "{lbl_res}: ..."
   ],
-  "why_cited": "현재 읽고 있는 논문에서 이 논문을 왜 인용했는지(예: 기반 아키텍처, 비교 대상, 한계점 지적, 개념 차용 등) 구체적 맥락 설명"
+  "why_cited": "Concrete explanation in {target_desc} of why the current paper cites [{ref_entry.ref_key}] (e.g., foundational architecture, baseline comparison, limitation addressed, borrowed concept)"
 }}"""
 
-    raw_out, used_engine = await run_local_llm(prompt, engine=engine)
+    raw_out, used_engine = await run_local_llm(
+        prompt, engine=engine, system_prompt=build_system_prompt(prof.code)
+    )
     data = _extract_json_obj(raw_out)
 
     points = [str(p).strip() for p in (data.get("summary_points") or []) if str(p).strip()]
@@ -1110,6 +1176,7 @@ async def summarize_cited_paper(
     return CitationSummaryResponse(
         ref_key=ref_entry.ref_key,
         engine=used_engine,
+        lang=prof.code,
         model_name=used_model,
         reasoning_effort=used_effort,
         source_type=source_type,
@@ -1443,50 +1510,57 @@ async def generate_paper_overview(
     doc: PaperDocument,
     raw_chunks: list[RawBodyChunk],
     engine: str = "auto",
+    lang: Optional[str] = None,
 ) -> tuple[PaperOverview, Optional[str]]:
     """
     Step 0 before section-by-section translation: Generate a crisp high-level Paper Summary &
     Core Contributions card from the paper's Abstract, Introduction, Method, and Conclusion.
     """
+    prof = get_lang_profile(lang or doc.lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+
     slices: list[str] = []
     if raw_chunks:
         front_txt = "\n\n".join(c.text for c in raw_chunks[:2])[:6500]
-        slices.append(f"[논문 앞부분 — Title / Abstract / Introduction]:\n{front_txt}")
+        slices.append(f"[Paper Beginning — Title / Abstract / Introduction]:\n{front_txt}")
         if len(raw_chunks) >= 4:
             mid_c = raw_chunks[len(raw_chunks) // 2]
-            slices.append(f"[논문 중간 — Method 핵심부]:\n{mid_c.text[:2200]}")
+            slices.append(f"[Paper Middle — Core Method]:\n{mid_c.text[:2200]}")
         if len(raw_chunks) >= 3:
             tail_txt = raw_chunks[-1].text[-2800:]
-            slices.append(f"[논문 뒷부분 — Experiments / Conclusion]:\n{tail_txt}")
+            slices.append(f"[Paper Ending — Experiments / Conclusion]:\n{tail_txt}")
     else:
         fallback_txt = "\n".join(f"[p.{s.page} | {s.section}] {s.text}" for s in doc.sentences)[:9500]
         slices.append(fallback_txt)
 
     paper_excerpt = "\n\n".join(slices)
 
-    prompt = f"""다음 학술 논문의 핵심 내용을 먼저 한눈에 파악할 수 있도록 **논문 요약 및 주요 Contribution**을 한국어로 정리해주세요.
-어미는 본문 번역과 동일하게 간결하고 명확한 학술 평어체(`~한다`, `~이다`, `~제시한다`)로 작성하고, 불필요한 미사여구 없이 핵심만 정확히 짚어주세요. 수식 기호가 필요하면 `$...$` 인라인 LaTeX(백슬래시는 `\\\\` 두 번)로 표기할 수 있습니다.
+    prompt = f"""Organize a crisp **Paper Summary & Key Contributions** strictly in **{target_desc}** so a researcher can grasp the core essence of this paper at a glance before reading the full text.
+{prof.overview_style_guide}
+Avoid filler phrases and focus strictly on technical substance. If mathematical symbols or complexity expressions are needed, format them as inline LaTeX `$...$` (escape backslashes twice as `\\\\` inside JSON strings).
 
-[현재 파악된 제목]: {doc.title}
+[Detected Title]: {doc.title}
 
-[논문 발췌 본문]:
+[Paper Excerpts]:
 {paper_excerpt}
 
-반드시 아래 JSON 형식으로만 출력하세요(코드블록 외 다른 설명 금지):
+Respond ONLY in the following valid JSON format (no extra text outside JSON; `clean_title` stays in original English, and ALL other fields MUST be written in **{target_desc}**):
 {{
-  "clean_title": "정제된 정확한 영어 논문 제목",
-  "tldr": "이 논문이 무엇을 제안하고 왜 중요한지 1~2문장 핵심 요약",
-  "problem": "기존 접근법의 한계와 이 논문이 풀고자 하는 핵심 문제 (1~2문장)",
-  "method": "제안하는 핵심 방법론·구조 요약 (1~2문장)",
+  "clean_title": "Cleaned exact English paper title",
+  "tldr": "1–2 sentence core summary in {target_desc} of what this paper proposes and why it matters",
+  "problem": "Limitations of prior approaches and the core problem addressed (1–2 sentences in {target_desc})",
+  "method": "Core proposed methodology / architecture summary (1–2 sentences in {target_desc})",
   "contributions": [
-    "**핵심 키워드 1**: 첫 번째 주요 Contribution 설명 (1~2문장)",
-    "**핵심 키워드 2**: 두 번째 주요 Contribution 설명 (1~2문장)",
-    "**핵심 키워드 3**: 세 번째 주요 Contribution 설명 (1~2문장)"
+    "**Key Contribution 1 (in {target_desc})**: Description (1–2 sentences in {target_desc})",
+    "**Key Contribution 2 (in {target_desc})**: Description (1–2 sentences in {target_desc})",
+    "**Key Contribution 3 (in {target_desc})**: Description (1–2 sentences in {target_desc})"
   ],
-  "results": "주요 데이터셋/실험에서 달성한 핵심 정량·정성 성과 (1문장)"
+  "results": "Key quantitative/qualitative experimental results achieved (1 sentence in {target_desc})"
 }}"""
 
-    raw, used_engine = await run_local_llm(prompt, engine=engine)
+    raw, used_engine = await run_local_llm(
+        prompt, engine=engine, system_prompt=build_system_prompt(prof.code)
+    )
     data = _extract_json_obj(raw)
 
     contribs = [
@@ -1504,10 +1578,62 @@ async def generate_paper_overview(
         method=str(data.get("method") or "").strip(),
         contributions=contribs,
         results=str(data.get("results") or "").strip(),
+        lang=prof.code,
         engine=used_engine,
         model_name=used_model,
     )
     return overview, clean_title
+
+
+async def generate_media_author_insight(
+    paper_title: str,
+    media_kind: str,
+    media_label: str,
+    caption_en: str,
+    citing_body_sentences: list[str],
+    internal_labels_text: str,
+    paper_tldr: str = "",
+    engine: str = "auto",
+    lang: Optional[str] = None,
+) -> tuple[str, str, str]:
+    """Generate a crisp explanation of what the authors want to argue/demonstrate through a specific Figure or Table."""
+    prof = get_lang_profile(lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+    mentions_block = (
+        "\n".join(f"- {s}" for s in citing_body_sentences[:5])
+        if citing_body_sentences
+        else "(No direct body mention matched — infer from caption, internal labels/values, and paper thesis)"
+    )
+
+    prompt = f"""Explain clearly in **{target_desc}** what the authors want to argue, demonstrate, or highlight through **{media_label}** ({media_kind}) in this academic paper.
+Do NOT merely repeat or translate the caption word-for-word — instead, synthesize the body text claims, internal labels/scores inside the {media_kind}, and the caption to tell the reader **why the authors included {media_label} and what key conclusion/comparison to take away from it**.
+
+Style rule:
+- {prof.media_insight_style_guide}
+- Keep inline math in `$...$` (double-escape backslashes `\\\\` inside JSON).
+
+[Paper Title]: {paper_title}
+[Paper Core Thesis]: {paper_tldr or '(N/A)'}
+[Target {media_kind.upper()}]: {media_label}
+[Original Caption]: {caption_en}
+[Text / Numbers Extracted Inside the {media_kind.title()}]: {internal_labels_text or '(None)'}
+[Sentences in Paper Body Discussing {media_label}]:
+{mentions_block}
+
+Respond ONLY in valid JSON (no extra text):
+{{
+  "insight": "1–2 sentence explanation in {target_desc} of what the authors want to claim/demonstrate through {media_label}"
+}}"""
+
+    raw_out, used_engine = await run_local_llm(
+        prompt, engine=engine, system_prompt=build_system_prompt(prof.code)
+    )
+    data = _extract_json_obj(raw_out)
+    insight_txt = str(data.get("insight") or "").strip()
+    if not insight_txt:
+        raise ValueError("Empty insight returned by AI.")
+    used_model, _ = resolve_display_model_for_engine(used_engine)
+    return insight_txt, used_engine, used_model
 
 
 async def stream_chunk_section_and_translate(
@@ -1516,60 +1642,65 @@ async def stream_chunk_section_and_translate(
     total_chunks: int,
     prev_section: str,
     engine: str = "auto",
+    lang: Optional[str] = None,
 ) -> AsyncIterator[tuple[dict[str, Any], str]]:
     """
-    Stream AI-structured section classification + full sentence segmentation + natural researcher-style Korean translation
+    Stream AI-structured section classification + full sentence segmentation + natural researcher-style target-language translation
     as real-time JSONL records (`{"type": "meta", "title": ...}` or `{"section": ..., "page": ..., "en": ..., "ko": ...}`).
     """
+    prof = get_lang_profile(lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+
     prev_hint = (
-        f'직전 청크의 마지막 섹션명은 "{prev_section}" 이었습니다. 새 섹션 제목이 등장하기 전까지는 이 섹션명을 이어서 사용하세요.'
+        f'The last section name in the previous chunk was "{prev_section}". Continue using "{prev_section}" until a new section heading appears.'
         if prev_section
-        else "논문의 시작 부분입니다. 첫 줄에 정확한 논문 제목 메타 객체를 출력한 뒤 Abstract부터 본문 문장들을 순서대로 출력하세요."
+        else "This is the start of the paper. Output the clean paper title meta object on the first line, then output sentences starting from Abstract in order."
     )
 
     title_line_rule = (
-        '0. 첫 번째 줄에는 논문 제목을 정제하여 `{"type":"meta","title":"정확한 영어 논문 제목"}` 한 줄을 먼저 출력하세요.\n'
+        '0. On the very first line, output `{"type":"meta","title":"Exact Cleaned English Paper Title"}`.\n'
         if chunk.chunk_index == 0
         else ""
     )
 
-    prompt = f"""다음은 영어 학술 논문의 본문 텍스트 일부(청크 {chunk.chunk_index + 1}/{total_chunks})입니다.
-이 텍스트에서 섹션(Abstract, 1. Introduction, 2. Related Work, 3. Method 등)을 정확히 구분하고,
-본문의 영어 문장을 **끊지 않고 온전한 한 문장(Full sentence) 단위**로 분리하여 자연스러운 학술 한국어 번역(`ko`)과 함께 **한 줄에 JSON 객체 하나씩(JSONL)** 실시간 출력하세요.
+    prompt = f"""Below is a slice of an academic English paper's body text (Chunk {chunk.chunk_index + 1}/{total_chunks}).
+Identify sections accurately (Abstract, 1. Introduction, 2. Related Work, 3. Method, etc.), segment the prose into **intact full English sentences (`en`)**, and stream each sentence with its natural scholarly **{target_desc}** translation/explanation in the `"ko"` JSON field — outputting **one JSON object per line (JSONL)** in real time.
 
-[현재 파악된 논문 제목]: {paper_title}
-[연속성 힌트]: {prev_hint}
+[Current Paper Title]: {paper_title}
+[Continuity Hint]: {prev_hint}
+[Target Output Language for `"ko"` field]: **{target_desc}**
 
-[처리할 원문 텍스트]:
+[Raw Source Text]:
 {chunk.text}
 
-[엄격한 출력 및 번역 스타일 규칙]:
-{title_line_rule}1. 마크다운 코드블록(```)이나 인사말, 부연 설명을 절대 출력하지 마세요. 오직 한 줄에 하나의 유효한 JSON 객체만 출력합니다.
-2. 저자 이름/소속/이메일/페이지 머리말/쪽번호/단순 표 숫자 나열이나 깨진 수식 조각은 제외하고, 실제 읽어야 할 논문 문장들(본문 및 설명형 캡션)만 빠짐없이 순서대로 포함하세요.
-3. 새로운 섹션이나 서브섹션(예: "Abstract", "1. Introduction", "2. Related Work", "3.1 Architecture", "4. Experiments", "5. Conclusion")이 시작되면 `section` 값을 해당 섹션명으로 업데이트하세요.
-4. `en`: 문장을 중간에 쪼개지 말고 **온전한 영어 원문 한 문장 전체(Full sentence)**를 넣으세요. 줄바꿈 하이픈만 자연스럽게 복원하고, 인용 표기(`[1]`, `[12, 15]`, `(Vaswani et al., 2017)` 등)는 **절대 생략하지 말고 수식(`$...$`) 바깥에 원문 그대로 유지**하세요.
-5. `ko` (매우 중요 — 번역 품질 기준):
-   - 어미는 `~합니다`가 아니라 **간결하고 명확한 평어체 학술 문장(`~한다`, `~이다`, `~남는다`, `~도움이 될 수 있다`, `~다룬다`)**으로 작성하세요.
-   - 어색한 직역투를 피하고 한국 연구자가 논문을 읽을 때 가장 자연스럽게 이해되는 표현을 쓰세요. (`follow-up`, `target 시점`, `baseline`, 약어 `MRI`, `AD`, `AIBL(...) 연구` 등 원어 병기나 현업 용어가 더 자연스러운 단어는 억지로 번역하지 말고 자연스럽게 살리세요.)
-   - 영어 원문이 `, but ...`, `, whereas ...` 등으로 긴 복합문일 경우, `ko` 안에서는 자연스럽게 두 문장(`~기록한다. 하지만 ~남는다.`)으로 나누어 가독성을 높이세요. 인용 번호(`[1]` 등)도 `ko` 문장 안에 그대로 유지하세요.
-6. **수식 및 기호 LaTeX 표기 규칙 (매우 중요)**:
-   - 원문에 수학 변수·수식·그리스 문자·위/아래 첨자(PDF 추출 과정에서 `X ∈ RC×H×W`, `bg ∈ {0, 1}L`, `pt+1 ≤ p⋆`, `L = λ cos`처럼 평평하게 풀린 표현 포함)가 등장하면, `en`과 `ko` 모두 **표준 인라인 LaTeX(`$...$`)** 또는 독립 수식(`$$...$$`)으로 깔끔하게 복원해 표기하세요 (예: `$X \\in \\mathbb{{R}}^{{C \\times H \\times W}}$`, `$b_g \\in \\{{0, 1\\}}^L$`, `$p_{{t+1}} \\le p^{{\\star}}$`, `$\\mathcal{{L}}_{{\\text{{total}}}}$`).
-   - JSON 문자열 내부이므로 LaTeX 백슬래시는 반드시 두 번(`\\`, 예: `\\mathbb`, `\\times`, `\\frac`, `\\le`, `\\alpha`) 이스케이프하세요. 일반 숫자·가격이나 논문 인용 번호(`[1]`)에는 `$`를 쓰지 마세요.
-7. `page`: 텍스트의 `[Page N]` 표기를 참고하여 해당 문장의 페이지 번호(정수)를 넣으세요.
-8. **Figure 및 Table 인식 규칙 (`[[MEDIA id="..." kind="figure|table" label="..." page=N]]`)**:
-   - 원문에 `[[MEDIA id="p3_fig_1_1" kind="figure" label="Fig. 1" page=3]] 캡션...` 또는 `kind="table"` 마커가 등장하면 **절대 건너뛰지 말고** 그 위치 그대로 아래 형식의 JSON 한 줄로 출력하세요:
-     `{{"kind":"figure","media_id":"p3_fig_1_1","label":"Fig. 1","section":"현재 섹션명","page":3,"en":"원래 영어 캡션 전체(참고용 괄호 메모 제외)","ko":"캡션 전체에 대한 자연스러운 학술 한국어 번역(Table의 경우 표가 보여주는 핵심 비교/수치 요약을 한 문장 덧붙여도 좋음)"}}`
-
-[원하는 번역 수준 예시 (JSONL)]:
-{{"section":"Abstract","page":1,"en":"Longitudinal magnetic resonance imaging (MRI) records structural changes associated with aging and Alzheimer’s disease (AD), but repeated scanning is expensive and irregular follow-up leaves individual trajectories incomplete.","ko":"종단 MRI는 노화와 알츠하이머병(AD)에 따른 구조적 변화를 기록한다. 하지만 반복 촬영은 비용이 많이 들고, follow-up이 불규칙해서 개인의 궤적이 불완전하게 남는다."}}
-{{"section":"3. Method","page":2,"en":"Given an image $X \\in \\mathbb{{R}}^{{C \\times H \\times W}}$, the encoder produces a global code $b_g \\in \\{{0, 1\\}}^L$ [1].","ko":"입력 영상 $X \\in \\mathbb{{R}}^{{C \\times H \\times W}}$가 주어지면, 인코더는 전역 코드 $b_g \\in \\{{0, 1\\}}^L$을 생성한다 [1]."}}
-{{"section":"Abstract","page":1,"en":"Forecasting a future T1-weighted MRI from visits observed before the target time could help characterize possible anatomical trajectories.","ko":"target 시점 이전에 관측된 방문 데이터로 미래 T1 강조 MRI를 예측하면, 가능한 해부학적 궤적을 특성화하는 데 도움이 될 수 있다."}}"""
+[Strict Output & Scholarly Translation Rules]:
+{title_line_rule}1. NEVER output Markdown code fences (```), greetings, or commentary. Output ONLY one valid JSON object per line (JSONL).
+2. Exclude author affiliations/emails, running page headers, page numbers, raw table number dumps, or broken isolated equation fragments — include all actual paper prose sentences and descriptive figure/table captions in exact reading order.
+3. Update `section` whenever a new section or subsection begins (keep section titles in original English, e.g., "Abstract", "1. Introduction", "3.1 Architecture", "4. Experiments").
+4. `en`: Put the **intact full English sentence** without splitting mid-sentence. Repair line-break hyphens only, and **preserve ALL inline citation markers (`[1]`, `[12, 15]`, `(Vaswani et al., 2017)`) verbatim OUTSIDE `$...$` math spans**.
+5. `ko` (CRITICAL — MUST be written in **{target_desc}**; keep the JSON key named `"ko"`):
+   {prof.sentence_style_guide}
+   - Preserve inline citation markers (`[1]`, `[12, 15]`, etc.) inside `"ko"` as well.
+6. **LaTeX Math & Symbol Restoration (CRITICAL)**:
+   - Whenever mathematical variables, Greek letters, subscripts/superscripts, or flattened PDF math expressions (like `X ∈ RC×H×W`, `bg ∈ {{0, 1}}L`, `pt+1 ≤ p⋆`) appear, restore them cleanly in BOTH `en` and `ko` as standard inline LaTeX `$...$` or display `$$...$$` (e.g., `$X \\\\in \\\\mathbb{{R}}^{{C \\\\times H \\\\times W}}$`, `$b_g \\\\in \\\\{{0, 1\\\\}}^L$`, `$p_{{t+1}} \\\\le p^{{\\\\star}}$`).
+   - Because this is inside JSON strings, ALWAYS double-escape LaTeX backslashes (`\\\\`, e.g. `\\\\mathbb`, `\\\\times`, `\\\\frac`, `\\\\le`, `\\\\alpha`). Never wrap plain numbers or citation brackets (`[1]`) in `$`.
+7. `page`: Integer page number from `[Page N]` markers.
+8. **Figure & Table Markers (`[[MEDIA id="..." kind="figure|table" label="..." page=N]]`)**:
+   - Whenever a `[[MEDIA id="p3_fig_1_1" kind="figure" label="Fig. 1" page=3]] Caption...` or `kind="table"` marker appears, NEVER skip it — emit a JSON line at that exact position.
+   - Exclude any `[INTERNAL_LABELS: ...]` or `[BODY_CLAIMS: ...]` helper bracket suffixes from `"en"` (use them as context to write `"insight"`!).
+   - Include an `"insight"` field in **{target_desc}** explaining **what the authors want to show, argue, or highlight through this figure/table** (combining the caption, internal labels/scores, and surrounding body claims):
+     - {prof.media_insight_style_guide}
+   - Format:
+     `{{"kind":"figure","media_id":"p3_fig_1_1","label":"Fig. 1","section":"Current Section","page":3,"en":"Clean original English caption only","ko":"Natural scholarly {target_desc} translation of the caption","insight":"Author's core claim & what to look for in {target_desc}"}}`"""
 
     buffer = ""
     used_engine = engine
     reported_model = False
+    sys_prompt = build_system_prompt(prof.code)
 
-    async for delta, resolved_eng, model_name in stream_local_llm_text(prompt, engine=engine):
+    async for delta, resolved_eng, model_name in stream_local_llm_text(
+        prompt, engine=engine, system_prompt=sys_prompt
+    ):
         used_engine = resolved_eng
         if model_name and not reported_model:
             reported_model = True
@@ -1776,8 +1907,12 @@ async def stream_paper_chat_reply(
     context_snippet: Optional[str] = None,
     engine: str = "auto",
     response_style: str = "concise",
+    lang: Optional[str] = None,
 ) -> AsyncIterator[tuple[str, str, Optional[str]]]:
     """Stream a grounded Markdown Q&A reply based on the full paper text, figures/tables, and chat history."""
+    prof = get_lang_profile(lang or doc.lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+
     if raw_chunks:
         full_paper_text = "\n\n".join(c.text for c in raw_chunks)[:65000]
     else:
@@ -1792,54 +1927,59 @@ async def stream_paper_chat_reply(
 
     history_lines: list[str] = []
     for m in history[-8:]:
-        speaker = "사용자" if m.role == "user" else "AI"
+        speaker = "User" if m.role == "user" else "Assistant"
         history_lines.append(f"{speaker}: {m.content[:1000]}")
-    history_block = "\n\n".join(history_lines) if history_lines else "(첫 질문)"
+    history_block = "\n\n".join(history_lines) if history_lines else "(First question)"
 
     ctx_block = (
-        f"\n[사용자가 현재 포커스/선택한 문장 또는 그림·표]:\n{context_snippet}\n"
+        f"\n[Pinned Sentence / Figure / Table Selected by User]:\n{context_snippet}\n"
         if context_snippet
         else ""
     )
 
+    detail_keywords = (
+        "자세히", "상세히", "길게", "자세한 설명", "전부 설명",
+        "in detail", "detailed", "elaborate", "thoroughly",
+        "詳しく", "詳細", "详细", "詳細", "detallad", "ausführlich", "en détail",
+    )
     wants_detail = (
         response_style == "detailed"
-        or any(kw in user_message for kw in ("자세히", "상세히", "길게", "자세한 설명", "전부 설명"))
+        or any(kw in user_message.lower() for kw in detail_keywords)
     )
 
     if wants_detail:
         style_instruction = (
-            "논문 내용을 근거로 한국어 마크다운(Markdown)으로 체계적이고 이해하기 쉽게 답변하세요. "
-            "관련 페이지 `[p.N]`이나 인용 번호 `[1]`가 있으면 함께 표기하세요."
+            f"Answer clearly and systematically in **{target_desc}** (unless the user explicitly asks in another language) "
+            f"using clean Markdown grounded strictly in the paper. Cite `[p.N]` or `[1]` inline when relevant."
         )
-        sys_prompt = CHAT_SYSTEM_PROMPT_DETAILED
+        sys_prompt = build_chat_system_prompt(prof.code, detailed=True)
     else:
         style_instruction = (
-            "답변이 길어지지 않도록 **핵심만 짧고 간결하게** 한국어로 답변하세요:\n"
-            "1) 인사말·서론·배경 설명 없이 **첫 1~2문장에 핵심 결론**부터 바로 제시하세요.\n"
-            "2) 추가 설명이 꼭 필요할 때만 **짧은 불릿 2~3개(각 1문장 이내)** 로 요약해 **전체 4~6줄 이내**로 끝내세요.\n"
-            "3) 큰 제목(`#`, `##`)이나 장황한 문단을 쓰지 말고, 근거 페이지(`[p.N]`)나 인용(`[1]`)만 짧게 덧붙이세요."
+            f"Answer **SHORT, CRISP, and TO THE POINT** in **{target_desc}** (unless the user explicitly asks in another language):\n"
+            f"1) Start immediately with a **1–2 sentence core conclusion** (no greetings or filler intro).\n"
+            f"2) Add at most **2–3 short single-sentence bullet points** only if needed, keeping the entire reply within **4–6 lines**.\n"
+            f"3) Avoid large headings (`#`, `##`) or long paragraphs; cite `[p.N]` or `[1]` briefly inline."
         )
-        sys_prompt = CHAT_SYSTEM_PROMPT
+        sys_prompt = build_chat_system_prompt(prof.code, detailed=False)
 
-    prompt = f"""다음은 사용자가 현재 읽고 있는 학술 논문의 본문(Figure/Table 캡션 포함) 및 참고문헌입니다.
-(주의: JSON이 아니라 일반 마크다운 텍스트로 바로 답변하세요.)
+    prompt = f"""Below are the full text (including Figure/Table captions) and References of the academic paper the user is currently reading.
+(Note: Reply directly in plain Markdown text, NOT JSON.)
 
-[답변 작성 원칙]:
+[Reply Guidelines]:
 {style_instruction}
 
-[논문 제목]: {doc.title}
+[Paper Title]: {doc.title}
 
-[논문 본문 전체]:
+[Paper Full Text]:
 {full_paper_text}
 
-[주요 참고문헌(References)]:
-{refs_preview or '(참고문헌 없음)'}
+[Key References]:
+{refs_preview or '(No references parsed)'}
 
-[이전 대화 내역]:
+[Previous Conversation]:
 {history_block}
 {ctx_block}
-[사용자 질문]:
+[User Question]:
 {user_message}"""
 
     async for delta, resolved_eng, model_name in stream_local_llm_text(

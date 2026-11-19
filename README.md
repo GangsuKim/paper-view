@@ -12,9 +12,10 @@
 [![React](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=0f172a)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-SSE_Streaming-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![AI Engines](https://img.shields.io/badge/Local_CLI-Claude_%7C_Codex_%7C_Antigravity-d97706?style=flat-square)](#)
+[![Languages](https://img.shields.io/badge/Languages-KO_%7C_EN_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](#)
 [![VS Code](https://img.shields.io/badge/VS_Code-Extension_Ready-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white)](#)
 
-[**한국어**](README.md) · [**English**](README.en.md) · [인용 논문 간단 요약](#-원클릭-인용-논문-간단-요약-보기) · [주요 기능](#-주요-기능) · [30초 시작하기](#-30초-빠른-시작-quick-start) · [감사의 글](#-감사의-글-acknowledgments)
+[**한국어**](README.md) · [**English**](README.en.md) · [인용 논문 간단 요약](#-원클릭-인용-논문-간단-요약-보기) · [주요 기능](#-주요-기능) · [Quick Start](#-quick-start) · [감사의 글](#-감사의-글-acknowledgments)
 
 </div>
 
@@ -26,7 +27,8 @@
 
 단순한 PDF 번역기가 아니라, 연구자가 논문을 읽는 실제 흐름 그대로 설계되었습니다:
 1. 논문을 열자마자 **한줄 핵심 요약과 주요 Contribution 1·2·3·4, 문제 정의·제안 방법·주요 성과**를 최상단에 먼저 정리해 보여주고,
-2. 본문 속 인용 번호(`[13]`)를 누르면 **`✨ 간단 요약 보기`** 하나로 인용 논문의 **arXiv 원문 PDF·Main Figure·핵심 요약**까지 논문을 벗어나지 않고 바로 확인할 수 있습니다.
+2. 본문 속 **Figure · Table마다 저자가 해당 그림·표를 통해 주장하고 싶은 핵심 의도**를 본문 맥락·내부 수치와 결합해 짚어주며,
+3. 인용 번호(`[13]`)를 누르면 **`✨ 간단 요약 보기`** 하나로 인용 논문의 **arXiv 원문 PDF·Main Figure·핵심 요약**까지 논문을 벗어나지 않고 바로 확인할 수 있습니다.
 
 ---
 
@@ -52,16 +54,20 @@
 - 논문을 열면 긴 본문에 들어가기 전에 초록·서론·방법론·실험·결론을 가로질러 **한줄 핵심 요약(TL;DR) + 주요 Contribution + 문제 정의 / 제안 방법 / 주요 성과** 카드를 가장 먼저 띄웁니다.
 - 요약 카드가 완성되는 즉시 그 아래로 `Abstract` → `1. Introduction` → ... 전문 번역이 실시간으로 이어지며, 중간에 멈췄다가 **`이어서 번역`** 으로 언제든 재개할 수 있습니다.
 
-### 📖 2. 자연스러운 번역
+### 📖 2. 자연스러운 다국어 학술 번역 (8개 언어 UI · AI 출력 지원)
 - **완벽한 읽기 순서**: 심사 워터마크(`FOR REVIEW ONLY`), 머리말·쪽번호 노이즈를 제거하고 페이지마다 1단/2단/혼합 구조를 자동 판별해 순서 꼬임이 없습니다.
-- **자연스러운 학술 한국어**: 문장을 인위적으로 쪼개지 않고 온전한 영어 원문(Full Sentence) 아래에 `→` 화살표와 함께 연구자에게 자연스러운 평어체(`~한다`, `~이다`) 및 현장 용어(`baseline`, `follow-up`, `ablation` 등)를 살려 번역합니다.
-- **원본 PDF 양방향 동기화 & Figure·Table 추출**: 문장을 클릭하면 좌측 원본 PDF의 정확한 줄(`BBox`)이 주황색으로 하이라이트되고, Figure와 Table은 고해상도 PNG(`180~200 DPI`)로 자동 크롭되어 본문 흐름 안에 삽입됩니다.
+- **8개 언어 연구자 문체 & UI 전환**: 상단 언어 선택기에서 **한국어 · English · 日本語 · 简体中文 · 繁體中文 · Español · Deutsch · Français** 전환 시 화면 인터페이스와 AI 요약·번역·인용 요약·채팅이 모두 해당 언어의 자연스러운 학술 문체로 동작하며, 기존 언어 번역본도 날아가지 않고 언어별로 분리 보관됩니다.
+- **원본 PDF 양방향 동기화**: 문장이나 그림 블록을 클릭하면 좌측 원본 PDF의 정확한 위치(`BBox`)로 자동 이동·하이라이트되며, 선택된 블록만 선명한 포커스 링으로 구분됩니다.
 
-### 🌙 3. 취침 예약 · 연속 자동 번역 큐 (Overnight Queue)
+### 💡 3. Figure · Table `저자가 말하고 싶은 핵심` 주장 해설
+- 고해상도 PNG(`180~200 DPI`)로 자동 추출되어 본문 흐름 안에 삽입되는 Figure와 Table마다, 단순 캡션 직역을 넘어 **논문 본문에서 해당 그림·표를 인용하며 설명하는 문장들과 그림 내부 수치·라벨을 함께 분석**합니다.
+- *"저자들은 이 그림을 통해 ~라는 점을 주장하고(보여주고) 있어요"* 형태로 **왜 이 그림이 들어갔고 무엇을 비교해 봐야 하는지**를 바로 아래 콜아웃 카드로 정리해 줍니다. (기존 번역 논문에서도 원클릭 생성 지원)
+
+### 🌙 4. 취침 예약 · 연속 자동 번역 큐 (Overnight Queue)
 - 자기 전에 내일 읽을 PDF 논문 여러 개(또는 arXiv ID 목록)를 큐에 올려두고 **예약 시각(예: `02:00`)** 을 걸어두세요.
 - 밤새 5시간 구독 한도에 도달하더라도 멈추지 않고 **완료된 청크 지점까지 체크포인트로 저장한 뒤, 한도 초기화 후 자동으로 이어서** 아침까지 모든 논문을 완성해 둡니다.
 
-### 💬 4. 논문 기반의 채팅 & 실시간 한도 체크
+### 💬 5. 논문 기반의 채팅 & 실시간 한도 체크
 - **AI 채팅 (`논문 질문하기`)**: 본문·캡션·참고문헌 전체를 바탕으로 핵심 4~6줄 내외로 명쾌하게 답변하며(`간결 | 상세` 스위치 지원), 경계선 드래그로 채팅창 크기를 자유롭게 조절할 수 있습니다.
 - **무토큰 사용량 게이지**: 상단 바에서 현재 사용 중인 단일 모델·추론 강도(`low`~`max`) 전환은 물론, 토큰 소모 없이 **현재 5시간 세션 및 주간 남은 구독 한도(`%`)** 를 실시간으로 확인합니다.
 
@@ -97,6 +103,8 @@ cd paper-view
 chmod +x start.sh
 ./start.sh           # 포트 변경 시: ./start.sh --port 9000
 ```
+
+> **실행 옵션**: `--port <번호>` (기본 `8787`), `--host <주소>` (기본 `127.0.0.1`), `--no-browser` (브라우저 자동 열기 생략)
 
 ### VS Code / Antigravity IDE 내부에서 쓰기
 프로젝트 폴더를 VS Code에서 열고 **`F5`** 를 누르거나 확장 프로그램을 실행한 뒤, 탐색기에서 아무 `.pdf` 논문 파일을 우클릭 → **`PaperView로 논문 열기`** 를 선택하면 에디터 탭 안에서 바로 열립니다.

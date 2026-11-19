@@ -14,12 +14,15 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  Lightbulb,
 } from 'lucide-react';
 import { getApiBase } from '../api';
+import { getUiStrings, type LangCode } from '../i18n';
 import type { InlineCitation, PaperOverview, SentenceItem } from '../types';
 import { getExplicitMathRanges, renderMathText } from '../utils/mathRenderer';
 
 interface ReaderPaneProps {
+  lang?: LangCode;
   overview: PaperOverview | null;
   loadingOverview: boolean;
   onRefreshOverview: () => void;
@@ -33,6 +36,8 @@ interface ReaderPaneProps {
   activeSentenceId: string | null;
   scrollSignal: number; // incremented when Left PDF requests Right Reader scroll
   activeCitationRefKey: string | null;
+  loadingInsightIds?: Set<string>;
+  onRequestMediaInsight?: (sentenceId: string, force?: boolean) => void;
   onSelectSentenceFromReader: (sentence: SentenceItem) => void;
   onClickCitation: (refKey: string, sentence: SentenceItem) => void;
   onPauseStream: () => void;
@@ -225,6 +230,7 @@ function renderOverviewRich(text: string, keyPrefix: string): React.ReactNode {
 }
 
 export const ReaderPane: React.FC<ReaderPaneProps> = ({
+  lang = 'ko',
   overview,
   loadingOverview,
   onRefreshOverview,
@@ -238,12 +244,15 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
   activeSentenceId,
   scrollSignal,
   activeCitationRefKey,
+  loadingInsightIds,
+  onRequestMediaInsight,
   onSelectSentenceFromReader,
   onClickCitation,
   onPauseStream,
   onResumeStream,
   onRestartStream,
 }) => {
+  const t = getUiStrings(lang);
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const overviewCardRef = useRef<HTMLDivElement | null>(null);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -303,7 +312,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
           <Search size={14} className="muted-icon" />
           <input
             type="text"
-            placeholder="원문 또는 번역 검색..."
+            placeholder={t.searchPlaceholder}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -311,8 +320,8 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
 
         <div className="reader-mode-actions">
           {aiModel && (
-            <span className="active-model-chip" title={`현재 논문에 사용된 AI 모델: ${aiModel}`}>
-              모델: <strong>{aiModel}</strong>
+            <span className="active-model-chip" title={`${t.modelLabel}: ${aiModel}`}>
+              {t.modelLabel}: <strong>{aiModel}</strong>
             </span>
           )}
 
@@ -320,17 +329,16 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             type="button"
             className={`pill-toggle-btn ${showKo ? 'active' : ''}`}
             onClick={() => setShowKo((v) => !v)}
-            title="문장별 한국어 번역 표시 켜기/끄기"
           >
             {showKo ? <Eye size={14} /> : <EyeOff size={14} />}
-            <span>{showKo ? '번역 함께 보기' : '영어 원문만'}</span>
+            <span>{showKo ? t.showTransBtn : t.onlyOrigBtn}</span>
           </button>
 
           {aiStatus === 'completed' && (
             <button
               type="button"
               className="icon-btn"
-              title="현재 선택한 AI 엔진으로 논문 다시 번역"
+              title={t.retranslateTitle}
               onClick={onRestartStream}
             >
               <RefreshCw size={14} />
@@ -348,29 +356,25 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
               <span>
                 {sentences.length === 0 ? (
                   !overview ? (
-                    <>
-                      AI가 가장 먼저 <strong>논문 핵심 요약 &amp; Contribution</strong>을 정리하고
-                      있습니다...
-                    </>
+                    <>{t.streamOverviewWait}</>
                   ) : (
-                    <>
-                      요약 완료! 이어서 <strong>Abstract / Introduction / ...</strong> 섹션별 실시간
-                      번역을 시작합니다...
-                    </>
+                    <>{t.streamSectionsStart}</>
                   )
                 ) : (
                   <>
-                    실시간 번역 중 —{' '}
-                    <strong>{streamingSection || sections[sections.length - 1] || '본문'}</strong>{' '}
-                    ({sentences.length}문장 완료 · {aiProgress}%)
-                    {aiModel ? ` · 모델: ${aiModel}` : ''}
+                    {t.streamProgress(
+                      streamingSection || sections[sections.length - 1] || 'Abstract',
+                      sentences.length,
+                      aiProgress
+                    )}
+                    {aiModel ? ` · ${t.modelLabel}: ${aiModel}` : ''}
                   </>
                 )}
               </span>
             </div>
             <button type="button" className="stream-ctrl-btn" onClick={onPauseStream}>
               <Pause size={12} />
-              <span>일시정지</span>
+              <span>{t.pauseBtn}</span>
             </button>
           </div>
           <div className="stream-progress-track">
@@ -385,17 +389,15 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
       {aiStatus === 'paused' && (
         <div className="stream-progress-banner paused">
           <div className="stream-banner-top">
-            <span>
-              번역이 일시정지되었습니다 ({sentences.length}문장 완료 · {aiProgress}%)
-            </span>
+            <span>{t.pausedMsg(sentences.length, aiProgress)}</span>
             <div className="row-center">
               <button type="button" className="stream-ctrl-btn primary" onClick={onResumeStream}>
                 <Play size={12} />
-                <span>이어서 번역</span>
+                <span>{t.resumeBtn}</span>
               </button>
               <button type="button" className="stream-ctrl-btn" onClick={onRestartStream}>
                 <RefreshCw size={12} />
-                <span>처음부터</span>
+                <span>{t.restartBtn}</span>
               </button>
             </div>
           </div>
@@ -405,10 +407,12 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
       {aiStatus === 'error' && (
         <div className="stream-progress-banner error">
           <div className="stream-banner-top">
-            <span>스트리밍 번역 오류: {aiError || '알 수 없는 오류'}</span>
+            <span>
+              {t.streamErrPrefix}: {aiError || 'Unknown error'}
+            </span>
             <button type="button" className="stream-ctrl-btn primary" onClick={onResumeStream}>
               <RefreshCw size={12} />
-              <span>이어서 재시도</span>
+              <span>{t.retryBtn}</span>
             </button>
           </div>
         </div>
@@ -426,7 +430,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                 overviewCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
               }}
             >
-              ✦ 핵심 요약
+              {t.overviewChip}
             </button>
           )}
           {sections.map((sec) => (
@@ -450,7 +454,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             <div className="overview-card-header">
               <div className="overview-title-left">
                 <Sparkles size={15} className="overview-sparkle" />
-                <h3>논문 핵심 요약 &amp; Contribution</h3>
+                <h3>{t.overviewTitle}</h3>
                 {overview?.model_name && (
                   <span className="overview-model-pill">{overview.model_name}</span>
                 )}
@@ -461,7 +465,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                   <button
                     type="button"
                     className="icon-tiny-btn"
-                    title="현재 모델로 핵심 요약 다시 생성"
+                    title={t.retranslateTitle}
                     disabled={loadingOverview}
                     onClick={onRefreshOverview}
                   >
@@ -470,7 +474,6 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                   <button
                     type="button"
                     className="icon-tiny-btn"
-                    title={overviewCollapsed ? '요약 펼치기' : '요약 접기'}
                     onClick={() => setOverviewCollapsed((v) => !v)}
                   >
                     {overviewCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
@@ -482,23 +485,21 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             {!overview ? (
               <div className="overview-loading-body">
                 <div className="spinner-ring small" />
-                <span>
-                  논문 전체 구조(초록·서론·방법론·결론)를 바탕으로 <strong>핵심 요약과 주요 Contribution</strong>을 먼저 작성하는 중입니다...
-                </span>
+                <span>{t.overviewLoading}</span>
               </div>
             ) : (
               !overviewCollapsed && (
                 <div className="overview-card-body">
                   {overview.tldr && (
                     <div className="overview-tldr-box">
-                      <span className="overview-kicker">한줄 핵심 요약</span>
+                      <span className="overview-kicker">{t.tldrLabel}</span>
                       <p>{renderOverviewRich(overview.tldr, 'ov_tldr')}</p>
                     </div>
                   )}
 
                   {overview.contributions.length > 0 && (
                     <div className="overview-contrib-box">
-                      <span className="overview-kicker">주요 Contribution</span>
+                      <span className="overview-kicker">{t.contribLabel}</span>
                       <ol className="overview-contrib-list">
                         {overview.contributions.map((item, idx) => (
                           <li key={idx}>
@@ -516,19 +517,19 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                     <div className="overview-meta-grid">
                       {overview.problem && (
                         <div className="overview-meta-item">
-                          <span className="overview-meta-tag">문제 정의</span>
+                          <span className="overview-meta-tag">{t.problemLabel}</span>
                           <p>{renderOverviewRich(overview.problem, 'ov_prob')}</p>
                         </div>
                       )}
                       {overview.method && (
                         <div className="overview-meta-item">
-                          <span className="overview-meta-tag">제안 방법</span>
+                          <span className="overview-meta-tag">{t.methodLabel}</span>
                           <p>{renderOverviewRich(overview.method, 'ov_meth')}</p>
                         </div>
                       )}
                       {overview.results && (
                         <div className="overview-meta-item">
-                          <span className="overview-meta-tag">주요 성과</span>
+                          <span className="overview-meta-tag">{t.resultsLabel}</span>
                           <p>{renderOverviewRich(overview.results, 'ov_res')}</p>
                         </div>
                       )}
@@ -545,12 +546,12 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             <div className="skeleton-card" />
             <div className="skeleton-card short" />
             <div className="skeleton-card" />
-            <p>번역이 완료되는 문장부터 실시간으로 바로 표시됩니다...</p>
+            <p>{t.skeletonWait}</p>
           </div>
         )}
 
         {groupedBySection.length === 0 && !isStreaming && (
-          <div className="pane-placeholder">표시할 문장이 없습니다.</div>
+          <div className="pane-placeholder">{t.noSentences}</div>
         )}
 
         {groupedBySection.map(({ section, items }) => (
@@ -564,7 +565,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
               <div className="sec-title-wrap">
                 <BookOpen size={15} className="sec-icon" />
                 <h3>{section}</h3>
-                <span className="sec-count">{items.length}문장</span>
+                <span className="sec-count">{t.sentenceCount(items.length)}</span>
               </div>
             </div>
 
@@ -613,7 +614,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                       >
                         <img src={fullImgUrl} alt={sent.media_label || sent.text} loading="lazy" />
                         <span className="media-zoom-hint">
-                          <ZoomIn size={13} /> 크게 보기
+                          <ZoomIn size={13} /> {t.zoomImage}
                         </span>
                       </div>
                     )}
@@ -639,6 +640,65 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                         </span>
                       </div>
                     )}
+
+                    {isMedia && showKo && (
+                      <div
+                        className="media-author-insight-area"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {sent.insight ? (
+                          <div className="media-insight-box">
+                            <div className="media-insight-head">
+                              <span className="media-insight-kicker">
+                                <Lightbulb size={13} />
+                                <span>
+                                  {t.mediaInsightLabel(
+                                    sent.kind === 'table' ? 'table' : 'figure'
+                                  )}
+                                </span>
+                              </span>
+                              {onRequestMediaInsight && (
+                                <button
+                                  type="button"
+                                  className="icon-tiny-btn"
+                                  title={t.retranslateTitle}
+                                  disabled={loadingInsightIds?.has(sent.id)}
+                                  onClick={() => onRequestMediaInsight(sent.id, true)}
+                                >
+                                  <RefreshCw
+                                    size={11}
+                                    className={loadingInsightIds?.has(sent.id) ? 'spin' : ''}
+                                  />
+                                </button>
+                              )}
+                            </div>
+                            <p className="media-insight-text">
+                              {renderOverviewRich(sent.insight, `mi_${sent.id}`)}
+                            </p>
+                          </div>
+                        ) : loadingInsightIds?.has(sent.id) ? (
+                          <div className="media-insight-loading">
+                            <div className="spinner-ring tiny" />
+                            <span>{t.mediaInsightLoading}</span>
+                          </div>
+                        ) : (
+                          onRequestMediaInsight && (
+                            <button
+                              type="button"
+                              className="media-insight-cta-btn"
+                              onClick={() => onRequestMediaInsight(sent.id, false)}
+                            >
+                              <Lightbulb size={13} />
+                              <span>
+                                {t.mediaInsightBtn(
+                                  sent.kind === 'table' ? 'table' : 'figure'
+                                )}
+                              </span>
+                            </button>
+                          )
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -658,7 +718,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                 type="button"
                 className="icon-btn"
                 onClick={() => setLightboxItem(null)}
-                title="닫기"
+                title={t.close}
               >
                 <X size={18} />
               </button>
@@ -673,6 +733,23 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
               <p>{renderMathText(lightboxItem.text, 'lb_en')}</p>
               {lightboxItem.ko && (
                 <p className="ko">→ {renderMathText(lightboxItem.ko, 'lb_ko')}</p>
+              )}
+              {lightboxItem.insight && (
+                <div className="media-insight-box" style={{ marginTop: 10 }}>
+                  <div className="media-insight-head">
+                    <span className="media-insight-kicker">
+                      <Lightbulb size={13} />
+                      <span>
+                        {t.mediaInsightLabel(
+                          lightboxItem.kind === 'table' ? 'table' : 'figure'
+                        )}
+                      </span>
+                    </span>
+                  </div>
+                  <p className="media-insight-text">
+                    {renderOverviewRich(lightboxItem.insight, 'lb_mi')}
+                  </p>
+                </div>
               )}
             </div>
           </div>

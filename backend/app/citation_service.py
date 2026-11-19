@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .lang_profiles import get_lang_profile, normalize_lang_code
 from .models import (
     CitationMetadataResponse,
     CitingSentenceSnippet,
@@ -657,16 +658,18 @@ async def resolve_citation_metadata(
     doc: PaperDocument,
     ref_key: str,
     force_arxiv_check: bool = False,
+    lang: Optional[str] = None,
 ) -> CitationMetadataResponse:
     """
     Stage 1 & Pre-Stage 2: Always check arXiv by title FIRST so IEEE / paywalled references
     automatically resolve to their readable arXiv version whenever available.
     """
+    code = normalize_lang_code(lang or doc.lang)
     entry = doc.references.get(ref_key)
     if entry is None:
         entry = ReferenceEntry(
             ref_key=ref_key,
-            raw_text=f"Reference [{ref_key}] (본문 References 섹션에서 원문 서지 항목을 찾지 못했습니다)",
+            raw_text=f"Reference [{ref_key}]",
             title=f"Reference [{ref_key}]",
             enriched=True,
             arxiv_checked=True,
@@ -700,10 +703,10 @@ async def resolve_citation_metadata(
             entry.enriched = True
             entry.arxiv_checked = True
             doc.references[ref_key] = entry
-            update_paper_doc(doc)
+            update_paper_doc(doc, lang=code)
 
     citing = collect_citing_sentences(doc, ref_key)
-    cached_summaries = load_citation_summaries(doc.paper_id)
+    cached_summaries = load_citation_summaries(doc.paper_id, lang=code)
 
     return CitationMetadataResponse(
         ref_key=ref_key,
@@ -725,6 +728,7 @@ async def resolve_citation_metadata(
 
 async def fetch_cited_paper_content(
     entry: ReferenceEntry,
+    lang: Optional[str] = None,
 ) -> tuple[str, str, str, Optional[str], Optional[str]]:
     """
     Stage 2 helper: Ensure paper title is checked on arXiv FIRST, then fetch arXiv / OA full-text PDF
@@ -732,6 +736,7 @@ async def fetch_cited_paper_content(
     Returns: (extracted_content, source_type, source_label, main_figure_url, main_figure_caption)
     """
     ensure_dirs()
+    prof = get_lang_profile(lang)
 
     async with httpx.AsyncClient(
         headers={"User-Agent": USER_AGENT},
@@ -746,10 +751,10 @@ async def fetch_cited_paper_content(
         if entry.arxiv_id:
             base_id = re.sub(r"v\d+$", "", entry.arxiv_id.strip())
             candidate_pdf_urls.append(
-                (f"https://arxiv.org/pdf/{base_id}.pdf", f"arXiv 원문 PDF ({base_id}) 기반")
+                (f"https://arxiv.org/pdf/{base_id}.pdf", prof.source_arxiv_pdf_label.format(id=base_id))
             )
         if entry.pdf_url and all(entry.pdf_url != u for u, _ in candidate_pdf_urls):
-            candidate_pdf_urls.append((entry.pdf_url, "오픈액세스 원문 PDF 기반"))
+            candidate_pdf_urls.append((entry.pdf_url, prof.source_open_pdf_label))
 
         for pdf_url, label in candidate_pdf_urls:
             cache_key = hashlib.sha256(pdf_url.encode("utf-8")).hexdigest()[:16]
@@ -800,9 +805,9 @@ async def fetch_cited_paper_content(
             f"Year: {entry.year or 'Unknown'} | Venue: {entry.venue or 'Unknown'}\n\n"
             f"Abstract:\n{entry.abstract}"
         )
-        return meta_header, "abstract", "논문 초록(Abstract) 기반", None, None
+        return meta_header, "abstract", prof.source_abstract_label, None, None
 
-    return entry.raw_text, "citation_context_only", "서지 정보 및 인용 문맥 기반", None, None
+    return entry.raw_text, "citation_context_only", prof.source_context_label, None, None
 
 
 async def download_pdf_from_url_or_arxiv(url_or_arxiv: str) -> tuple[bytes, str]:

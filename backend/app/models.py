@@ -29,6 +29,7 @@ class SentenceItem(BaseModel):
     section: str
     text: str
     ko: str = ""
+    insight: Optional[str] = None
     slash_en: Optional[str] = None
     media_id: Optional[str] = None
     media_label: Optional[str] = None
@@ -97,6 +98,7 @@ class SentenceAnalysis(BaseModel):
     """Detailed on-demand AI sense-group breakdown for a single sentence."""
     sentence_id: str
     engine: str
+    lang: str = "ko"
     chunks: list[SenseChunk] = Field(default_factory=list)
     natural_ko: str
     key_terms: list[KeyTerm] = Field(default_factory=list)
@@ -113,6 +115,7 @@ class CitationSummaryResponse(BaseModel):
     """Stage 2: On-demand AI summary of a cited paper."""
     ref_key: str
     engine: str
+    lang: str = "ko"
     model_name: Optional[str] = None
     reasoning_effort: Optional[str] = None
     source_type: str
@@ -160,6 +163,7 @@ class PaperOverview(BaseModel):
     method: str = ""
     contributions: list[str] = Field(default_factory=list)
     results: str = ""
+    lang: str = "ko"
     engine: Optional[str] = None
     model_name: Optional[str] = None
 
@@ -170,6 +174,7 @@ class PaperDocument(BaseModel):
     filename: str
     page_count: int
     format_version: int = 1
+    lang: str = "ko"
     overview: Optional[PaperOverview] = None
     sections: list[str] = Field(default_factory=list)
     sentences: list[SentenceItem] = Field(default_factory=list)
@@ -186,30 +191,43 @@ class PaperDocument(BaseModel):
 
 class OpenLocalRequest(BaseModel):
     file_path: str
+    lang: Optional[str] = None
 
 
 class ImportUrlRequest(BaseModel):
     url_or_arxiv: str
+    lang: Optional[str] = None
 
 
 class AnalyzeSentenceRequest(BaseModel):
     engine: str = "auto"
     force: bool = False
+    lang: Optional[str] = None
 
 
 class AnalyzeBatchRequest(BaseModel):
     sentence_ids: list[str]
     engine: str = "auto"
+    lang: Optional[str] = None
 
 
 class SummarizeCitationRequest(BaseModel):
     engine: str = "auto"
     force: bool = False
+    lang: Optional[str] = None
 
 
 class GenerateOverviewRequest(BaseModel):
     engine: str = "auto"
     force: bool = False
+    lang: Optional[str] = None
+
+
+class MediaInsightResponse(BaseModel):
+    sentence_id: str
+    insight: str
+    engine: Optional[str] = None
+    model_name: Optional[str] = None
 
 
 class EngineSettingsRequest(BaseModel):
@@ -220,6 +238,7 @@ class EngineSettingsRequest(BaseModel):
     codex_effort: Optional[str] = None
     antigravity_model: Optional[str] = None
     antigravity_thinking_level: Optional[str] = None
+    default_lang: Optional[str] = None
 
 
 class ChatMessage(BaseModel):
@@ -229,6 +248,7 @@ class ChatMessage(BaseModel):
     context_snippet: Optional[str] = None
     engine: Optional[str] = None
     model_name: Optional[str] = None
+    lang: str = "ko"
     created_at: str
 
 
@@ -237,6 +257,7 @@ class ChatStreamRequest(BaseModel):
     context_snippet: Optional[str] = None
     engine: str = "auto"
     response_style: str = "concise"  # "concise" | "detailed"
+    lang: Optional[str] = None
 
 
 class UsageQuotaItem(BaseModel):
@@ -268,6 +289,7 @@ class QueueItem(BaseModel):
     title: str
     filename: str
     engine: str = "claude"
+    lang: str = "ko"
     force_retranslate: bool = False
     status: str = "queued"  # "queued" | "running" | "waiting_quota" | "completed" | "error" | "cancelled"
     progress: int = 0
@@ -289,12 +311,14 @@ class QueueStateResponse(BaseModel):
 class QueueAddUrlsRequest(BaseModel):
     urls_or_arxivs: list[str]
     engine: str = "claude"
+    lang: Optional[str] = None
     force: bool = False
 
 
 class QueueAddPapersRequest(BaseModel):
     paper_ids: list[str]
     engine: str = "claude"
+    lang: Optional[str] = None
     force: bool = False
 
 

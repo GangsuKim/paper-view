@@ -1137,7 +1137,8 @@ def _detect_and_crop_page_media(
                 vy0 = min(r[1] for r in vis_above)
                 vx1 = max(r[2] for r in vis_above)
                 vy1 = max(r[3] for r in vis_above)
-                # Absorb interior diagram text labels (axis ticks, (a)/(b), module boxes)
+                fig_snippets: list[str] = []
+                # Absorb interior diagram text labels (axis ticks, (a)/(b), module boxes, correlation scores)
                 for ob in blocks:
                     if ob is cb or ob["id"] in caption_ids or is_anchor_prose(ob):
                         continue
@@ -1146,7 +1147,9 @@ def _detect_and_crop_page_media(
                         vx0, vy0 = min(vx0, ox0), min(vy0, oy0)
                         vx1, vy1 = max(vx1, ox1), max(vy1, oy1)
                         consumed_ids.add(ob["id"])
+                        fig_snippets.append(_clean_spaces(" ".join(l["text"] for l in ob["lines"])))
                 crop_box = (vx0, vy0, vx1, vy1)
+                table_hint_text = " | ".join(fig_snippets)[:450]
             else:
                 # Fallback: figure placed below caption
                 vis_below = [
@@ -1270,6 +1273,62 @@ def _detect_and_crop_page_media(
     return _sort_blocks_reading_order(remaining, pw), media_assets
 
 
+def find_media_citing_sentences(label: str, kind: str, prose_texts: list[str], max_hits: int = 4) -> list[str]:
+    """Find sentences in the paper body that explicitly reference `Fig. N` / `Figure N` or `Table N`."""
+    m_num = re.search(r"([A-Za-z]?\d+[A-Za-z]?)", label or "")
+    if not m_num:
+        return []
+    num = m_num.group(1)
+    if kind == "table":
+        pat = re.compile(rf"\b(?:Tab\.?|Tabs\.?|Table|Tables)\s*{re.escape(num)}(?![0-9])", re.IGNORECASE)
+    else:
+        pat = re.compile(rf"\b(?:Fig\.?|Figs\.?|Figure|Figures)\s*{re.escape(num)}(?![0-9])", re.IGNORECASE)
+
+    hits: list[str] = []
+    seen: set[str] = set()
+    for block in prose_texts:
+        if block.startswith("[[MEDIA "):
+            continue
+        for raw_sent in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9(\[])", block):
+            s = _clean_spaces(raw_sent)
+            if len(s) < 25 or len(s) > 520:
+                continue
+            if FIG_CAPTION_RE.match(s) or TAB_CAPTION_RE.match(s):
+                continue
+            if pat.search(s):
+                key = s[:80].lower()
+                if key not in seen:
+                    seen.add(key)
+                    hits.append(s)
+                    if len(hits) >= max_hits:
+                        return hits
+    return hits
+
+
+def extract_pdf_region_text(pdf_path: Path, page_num: int, bbox: Optional[BBox]) -> str:
+    """Extract interior labels/numbers from a Figure/Table region on `source.pdf` for on-demand insight generation."""
+    if bbox is None or not pdf_path.exists():
+        return ""
+    doc = fitz.open(str(pdf_path))
+    try:
+        idx = max(0, min(len(doc) - 1, page_num - 1))
+        page = doc[idx]
+        pw, ph = max(page.rect.width, 1.0), max(page.rect.height, 1.0)
+        rect = fitz.Rect(bbox.x0 * pw, bbox.y0 * ph, bbox.x1 * pw, bbox.y1 * ph)
+        blocks = page.get_text("blocks", clip=rect)
+        parts: list[str] = []
+        for b in blocks:
+            if len(b) >= 5 and isinstance(b[4], str):
+                txt = _clean_spaces(b[4])
+                if txt and not FIG_CAPTION_RE.match(txt) and not TAB_CAPTION_RE.match(txt):
+                    parts.append(txt)
+        return " | ".join(parts)[:650]
+    except Exception:
+        return ""
+    finally:
+        doc.close()
+
+
 def extract_pdf_prebundle(
     pdf_bytes: bytes,
     filename: str,
@@ -1326,7 +1385,7 @@ def extract_pdf_prebundle(
                 media_asset: Optional[MediaAsset] = b.get("media_asset")
                 if media_asset is not None:
                     hint = b.get("table_hint") or ""
-                    hint_suffix = f" (표 내부 텍스트 요약 참고용: {hint})" if hint else ""
+                    hint_suffix = f" [INTERNAL_LABELS: {hint}]" if hint else ""
                     marker = (
                         f'[[MEDIA id="{media_asset.media_id}" kind="{media_asset.kind}" '
                         f'label="{media_asset.label}" page={page_num}]] '
@@ -1357,6 +1416,23 @@ def extract_pdf_prebundle(
                     body_paragraphs.append((page_num, para_str))
 
         references = _parse_reference_lines(ref_lines)
+
+        # Enrich [[MEDIA ...]] markers with body sentences across the paper that discuss that Figure/Table
+        prose_only = [txt for _, txt in body_paragraphs if not txt.startswith("[[MEDIA ")]
+        enriched_paragraphs: list[tuple[int, str]] = []
+        for p_num, txt in body_paragraphs:
+            if txt.startswith("[[MEDIA "):
+                m_meta = re.match(
+                    r'^\[\[MEDIA id="[^"]+" kind="(figure|table)" label="([^"]+)" page=\d+\]\]',
+                    txt,
+                )
+                if m_meta:
+                    m_kind, m_label = m_meta.group(1), m_meta.group(2)
+                    mentions = find_media_citing_sentences(m_label, m_kind, prose_only, max_hits=3)
+                    if mentions:
+                        txt = f"{txt} [BODY_CLAIMS: {' / '.join(mentions)[:650]}]"
+            enriched_paragraphs.append((p_num, txt))
+        body_paragraphs = enriched_paragraphs
 
         # Group body paragraphs into ~4,600-char chunks with [Page X] tags
         raw_chunks: list[RawBodyChunk] = []
@@ -1498,6 +1574,7 @@ def build_ai_sentence_item(
     pdf_lines: list[PdfLineRecord],
     references: dict[str, ReferenceEntry],
     auth_year_idx: Optional[dict[str, str]] = None,
+    insight: Optional[str] = None,
 ) -> SentenceItem:
     if auth_year_idx is None:
         auth_year_idx = _build_author_year_index(references)
@@ -1510,6 +1587,7 @@ def build_ai_sentence_item(
         section=section.strip() or "Overview",
         text=en_text.strip(),
         ko=ko_text.strip(),
+        insight=(insight.strip() if insight else None),
         slash_en=(slash_en.strip() if slash_en else None),
         bboxes=bboxes,
         citations=citations,

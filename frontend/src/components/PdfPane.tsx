@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { getUiStrings, type LangCode } from '../i18n';
 import type { SentenceItem } from '../types';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -11,6 +12,7 @@ interface PdfPaneProps {
   sentences: SentenceItem[];
   activeSentenceId: string | null;
   scrollSignal: number; // incremented when Right Pane requests Left PDF scroll
+  lang?: LangCode;
   onSelectSentenceFromPdf: (sentence: SentenceItem) => void;
 }
 
@@ -26,6 +28,7 @@ interface SinglePageCanvasProps {
   scale: number;
   pageSentences: SentenceItem[];
   activeSentenceId: string | null;
+  syncTooltip: string;
   onSelectSentence: (s: SentenceItem) => void;
   registerPageRef: (pageNum: number, el: HTMLDivElement | null) => void;
 }
@@ -36,6 +39,7 @@ const SinglePageCanvas: React.FC<SinglePageCanvasProps> = ({
   scale,
   pageSentences,
   activeSentenceId,
+  syncTooltip,
   onSelectSentence,
   registerPageRef,
 }) => {
@@ -138,7 +142,7 @@ const SinglePageCanvas: React.FC<SinglePageCanvasProps> = ({
                 width: `${Math.max(0.5, (bb.x1 - bb.x0) * 100)}%`,
                 height: `${Math.max(0.8, (bb.y1 - bb.y0) * 100)}%`,
               }}
-              title="클릭하여 우측 끊어읽기 뷰와 동기화"
+              title={syncTooltip}
               onClick={(e) => {
                 e.stopPropagation();
                 onSelectSentence(sent);
@@ -157,8 +161,10 @@ export const PdfPane: React.FC<PdfPaneProps> = ({
   sentences,
   activeSentenceId,
   scrollSignal,
+  lang = 'ko',
   onSelectSentenceFromPdf,
 }) => {
+  const t = getUiStrings(lang);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -266,13 +272,13 @@ export const PdfPane: React.FC<PdfPaneProps> = ({
     <div className="pdf-pane-root">
       <div className="pane-subtoolbar">
         <span className="pane-subtitle">
-          원본 PDF 뷰어 {pagesMeta.length > 0 ? `(${pagesMeta.length}p)` : ''}
+          {t.pdfViewerTitle} {pagesMeta.length > 0 ? `(${pagesMeta.length}p)` : ''}
         </span>
         <div className="zoom-controls">
           <button
             className="icon-btn"
             onClick={() => setScale((s) => Number(Math.max(0.55, s - 0.15).toFixed(2)))}
-            title="축소"
+            title={t.zoomOut}
           >
             <ZoomOut size={15} />
           </button>
@@ -280,18 +286,18 @@ export const PdfPane: React.FC<PdfPaneProps> = ({
           <button
             className="icon-btn"
             onClick={() => setScale((s) => Number(Math.min(2.5, s + 0.15).toFixed(2)))}
-            title="확대"
+            title={t.zoomIn}
           >
             <ZoomIn size={15} />
           </button>
-          <button className="icon-btn" onClick={handleFitWidth} title="패널 폭에 맞추기">
+          <button className="icon-btn" onClick={handleFitWidth} title={t.fitWidth}>
             <Maximize2 size={14} />
           </button>
         </div>
       </div>
 
       <div className="pdf-scroll-area" ref={scrollContainerRef}>
-        {loading && <div className="pane-placeholder">PDF 렌더링 준비 중...</div>}
+        {loading && <div className="pane-placeholder">{t.pdfPreparing}</div>}
         {error && <div className="pane-error">{error}</div>}
         {pdfDoc &&
           pagesMeta.map((meta) => (
@@ -302,6 +308,7 @@ export const PdfPane: React.FC<PdfPaneProps> = ({
               scale={scale}
               pageSentences={sentencesByPage.get(meta.pageNumber) || []}
               activeSentenceId={activeSentenceId}
+              syncTooltip={t.syncTooltip}
               onSelectSentence={onSelectSentenceFromPdf}
               registerPageRef={registerPageRef}
             />

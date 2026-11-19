@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from .lang_profiles import normalize_lang_code
 from .models import (
     ChatMessage,
     CitationSummaryResponse,
@@ -45,6 +46,26 @@ def media_dir(paper_id: str) -> Path:
     return md
 
 
+def _doc_filename(lang: Optional[str]) -> str:
+    code = normalize_lang_code(lang)
+    return "document.json" if code == "ko" else f"document_{code}.json"
+
+
+def _cit_filename(lang: Optional[str]) -> str:
+    code = normalize_lang_code(lang)
+    return "citation_summaries.json" if code == "ko" else f"citation_summaries_{code}.json"
+
+
+def _ana_filename(lang: Optional[str]) -> str:
+    code = normalize_lang_code(lang)
+    return "sentence_analyses.json" if code == "ko" else f"sentence_analyses_{code}.json"
+
+
+def _chat_filename(lang: Optional[str]) -> str:
+    code = normalize_lang_code(lang)
+    return "chat_history.json" if code == "ko" else f"chat_history_{code}.json"
+
+
 def save_paper(
     pdf_bytes: bytes,
     doc: PaperDocument,
@@ -56,8 +77,27 @@ def save_paper(
     pdf_path = d / "source.pdf"
     if not pdf_path.exists():
         pdf_path.write_bytes(pdf_bytes)
-    doc_path = d / "document.json"
-    doc_path.write_text(doc.model_dump_json(indent=2), encoding="utf-8")
+
+    code = normalize_lang_code(doc.lang)
+    doc.lang = code
+    target_doc_path = d / _doc_filename(code)
+    target_doc_path.write_text(doc.model_dump_json(indent=2), encoding="utf-8")
+
+    # Always ensure base document.json exists as the canonical metadata anchor
+    base_doc_path = d / "document.json"
+    if code != "ko" and not base_doc_path.exists():
+        base_clone = doc.model_copy(
+            update={
+                "lang": "ko",
+                "overview": None,
+                "sections": [],
+                "sentences": [],
+                "ai_status": "pending",
+                "ai_progress": 0,
+                "ai_completed_chunks": 0,
+            }
+        )
+        base_doc_path.write_text(base_clone.model_dump_json(indent=2), encoding="utf-8")
 
     if pdf_lines is not None:
         (d / "pdf_lines.json").write_text(
@@ -105,20 +145,82 @@ def get_cited_media_file_path(filename: str) -> Optional[Path]:
     return target if target.exists() else None
 
 
-def update_paper_doc(doc: PaperDocument) -> None:
+def update_paper_doc(doc: PaperDocument, lang: Optional[str] = None) -> None:
+    code = normalize_lang_code(lang or doc.lang)
+    doc.lang = code
     d = paper_dir(doc.paper_id)
-    doc_path = d / "document.json"
+    doc_path = d / _doc_filename(code)
     doc_path.write_text(doc.model_dump_json(indent=2), encoding="utf-8")
 
+    # Sync enriched bibliography entries and refined title back to base document.json
+    if code != "ko":
+        base_path = d / "document.json"
+        if base_path.exists():
+            try:
+                base_doc = PaperDocument.model_validate_json(base_path.read_text(encoding="utf-8"))
+                changed = False
+                if doc.title and not doc.title.endswith(".pdf") and base_doc.title.endswith(".pdf"):
+                    base_doc.title = doc.title
+                    changed = True
+                for rk, ref in doc.references.items():
+                    if ref.enriched and (rk not in base_doc.references or not base_doc.references[rk].enriched):
+                        base_doc.references[rk] = ref
+                        changed = True
+                if changed:
+                    base_path.write_text(base_doc.model_dump_json(indent=2), encoding="utf-8")
+            except Exception:
+                pass
 
-def load_paper_doc(paper_id: str) -> Optional[PaperDocument]:
+
+def load_paper_doc(paper_id: str, lang: Optional[str] = None) -> Optional[PaperDocument]:
     ensure_dirs()
     safe_id = "".join(c for c in paper_id if c.isalnum() or c in ("-", "_"))
-    doc_path = PAPERS_DIR / safe_id / "document.json"
-    if not doc_path.exists():
+    p_dir = PAPERS_DIR / safe_id
+    if not p_dir.exists():
         return None
-    raw = doc_path.read_text(encoding="utf-8")
-    return PaperDocument.model_validate_json(raw)
+
+    code = normalize_lang_code(lang)
+    target_path = p_dir / _doc_filename(code)
+    base_path = p_dir / "document.json"
+
+    if target_path.exists():
+        doc = PaperDocument.model_validate_json(target_path.read_text(encoding="utf-8"))
+        doc.lang = code
+        # Pull in any enriched references from base document.json if needed
+        if code != "ko" and base_path.exists():
+            try:
+                base_doc = PaperDocument.model_validate_json(base_path.read_text(encoding="utf-8"))
+                for rk, bref in base_doc.references.items():
+                    if bref.enriched and (rk not in doc.references or not doc.references[rk].enriched):
+                        doc.references[rk] = bref
+            except Exception:
+                pass
+        return doc
+
+    if code != "ko" and base_path.exists():
+        base_doc = PaperDocument.model_validate_json(base_path.read_text(encoding="utf-8"))
+        chunks_cnt = len(load_raw_chunks(paper_id))
+        cloned = PaperDocument(
+            paper_id=base_doc.paper_id,
+            title=base_doc.title,
+            filename=base_doc.filename,
+            page_count=base_doc.page_count,
+            format_version=base_doc.format_version,
+            lang=code,
+            overview=None,
+            sections=[],
+            sentences=[],
+            references=base_doc.references,
+            ai_status="pending",
+            ai_progress=0,
+            ai_total_chunks=chunks_cnt or base_doc.ai_total_chunks,
+            ai_completed_chunks=0,
+            created_at=base_doc.created_at,
+        )
+        target_path.write_text(cloned.model_dump_json(indent=2), encoding="utf-8")
+        return cloned
+
+    return None
 
 
 def load_pdf_lines(paper_id: str) -> list[PdfLineRecord]:
@@ -152,17 +254,20 @@ def get_pdf_path(paper_id: str) -> Optional[Path]:
     return pdf_path if pdf_path.exists() else None
 
 
-def list_papers() -> list[PaperSummaryItem]:
+def list_papers(lang: Optional[str] = None) -> list[PaperSummaryItem]:
     ensure_dirs()
+    code = normalize_lang_code(lang)
     items: list[PaperSummaryItem] = []
     for d in PAPERS_DIR.iterdir():
         if not d.is_dir():
             continue
-        doc_path = d / "document.json"
-        if not doc_path.exists():
+        lang_path = d / _doc_filename(code)
+        base_path = d / "document.json"
+        chosen_path = lang_path if lang_path.exists() else base_path
+        if not chosen_path.exists():
             continue
         try:
-            doc = PaperDocument.model_validate_json(doc_path.read_text(encoding="utf-8"))
+            doc = PaperDocument.model_validate_json(chosen_path.read_text(encoding="utf-8"))
             items.append(
                 PaperSummaryItem(
                     paper_id=doc.paper_id,
@@ -171,7 +276,7 @@ def list_papers() -> list[PaperSummaryItem]:
                     page_count=doc.page_count,
                     sentence_count=len(doc.sentences),
                     reference_count=len(doc.references),
-                    ai_status=doc.ai_status,
+                    ai_status=doc.ai_status if chosen_path == lang_path else "pending",
                     created_at=doc.created_at,
                 )
             )
@@ -181,9 +286,9 @@ def list_papers() -> list[PaperSummaryItem]:
     return items
 
 
-def load_sentence_analyses(paper_id: str) -> dict[str, SentenceAnalysis]:
+def load_sentence_analyses(paper_id: str, lang: Optional[str] = None) -> dict[str, SentenceAnalysis]:
     d = paper_dir(paper_id)
-    p = d / "sentence_analyses.json"
+    p = d / _ana_filename(lang)
     if not p.exists():
         return {}
     try:
@@ -193,11 +298,17 @@ def load_sentence_analyses(paper_id: str) -> dict[str, SentenceAnalysis]:
         return {}
 
 
-def save_sentence_analysis(paper_id: str, analysis: SentenceAnalysis) -> None:
-    all_items = load_sentence_analyses(paper_id)
+def save_sentence_analysis(
+    paper_id: str,
+    analysis: SentenceAnalysis,
+    lang: Optional[str] = None,
+) -> None:
+    code = normalize_lang_code(lang or analysis.lang)
+    analysis.lang = code
+    all_items = load_sentence_analyses(paper_id, lang=code)
     all_items[analysis.sentence_id] = analysis
     d = paper_dir(paper_id)
-    p = d / "sentence_analyses.json"
+    p = d / _ana_filename(code)
     p.write_text(
         json.dumps(
             {k: v.model_dump() for k, v in all_items.items()},
@@ -208,9 +319,12 @@ def save_sentence_analysis(paper_id: str, analysis: SentenceAnalysis) -> None:
     )
 
 
-def load_citation_summaries(paper_id: str) -> dict[str, CitationSummaryResponse]:
+def load_citation_summaries(
+    paper_id: str,
+    lang: Optional[str] = None,
+) -> dict[str, CitationSummaryResponse]:
     d = paper_dir(paper_id)
-    p = d / "citation_summaries.json"
+    p = d / _cit_filename(lang)
     if not p.exists():
         return {}
     try:
@@ -220,11 +334,17 @@ def load_citation_summaries(paper_id: str) -> dict[str, CitationSummaryResponse]
         return {}
 
 
-def save_citation_summary(paper_id: str, summary: CitationSummaryResponse) -> None:
-    all_items = load_citation_summaries(paper_id)
+def save_citation_summary(
+    paper_id: str,
+    summary: CitationSummaryResponse,
+    lang: Optional[str] = None,
+) -> None:
+    code = normalize_lang_code(lang or summary.lang)
+    summary.lang = code
+    all_items = load_citation_summaries(paper_id, lang=code)
     all_items[summary.ref_key] = summary
     d = paper_dir(paper_id)
-    p = d / "citation_summaries.json"
+    p = d / _cit_filename(code)
     p.write_text(
         json.dumps(
             {k: v.model_dump() for k, v in all_items.items()},
@@ -235,9 +355,9 @@ def save_citation_summary(paper_id: str, summary: CitationSummaryResponse) -> No
     )
 
 
-def load_chat_history(paper_id: str) -> list[ChatMessage]:
+def load_chat_history(paper_id: str, lang: Optional[str] = None) -> list[ChatMessage]:
     d = paper_dir(paper_id)
-    p = d / "chat_history.json"
+    p = d / _chat_filename(lang)
     if not p.exists():
         return []
     try:
@@ -247,17 +367,21 @@ def load_chat_history(paper_id: str) -> list[ChatMessage]:
         return []
 
 
-def save_chat_history(paper_id: str, messages: list[ChatMessage]) -> None:
+def save_chat_history(
+    paper_id: str,
+    messages: list[ChatMessage],
+    lang: Optional[str] = None,
+) -> None:
     d = paper_dir(paper_id)
-    p = d / "chat_history.json"
+    p = d / _chat_filename(lang)
     p.write_text(
         json.dumps([m.model_dump() for m in messages], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
 
-def clear_chat_history(paper_id: str) -> None:
+def clear_chat_history(paper_id: str, lang: Optional[str] = None) -> None:
     d = paper_dir(paper_id)
-    p = d / "chat_history.json"
+    p = d / _chat_filename(lang)
     if p.exists():
         p.unlink()

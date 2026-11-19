@@ -4,7 +4,12 @@ import asyncio
 import json
 from typing import Any, AsyncIterator, Optional
 
-from .ai_service import generate_paper_overview, stream_chunk_section_and_translate
+from .ai_service import (
+    generate_paper_overview,
+    get_effective_default_lang,
+    stream_chunk_section_and_translate,
+)
+from .lang_profiles import get_lang_profile, normalize_lang_code
 from .models import PaperDocument
 from .pdf_parser import (
     _build_author_year_index,
@@ -27,14 +32,19 @@ def _sse_pack(event: str, payload: dict[str, Any]) -> str:
 
 
 class PaperStreamJob:
-    """Single-flight background streaming job for one paper, fanning out SSE events to subscribers."""
+    """Single-flight background streaming job for one (paper, lang) pair, fanning out SSE events."""
 
-    def __init__(self, paper_id: str, engine: str) -> None:
+    def __init__(self, paper_id: str, engine: str, lang: str = "ko") -> None:
         self.paper_id = paper_id
         self.engine = engine
+        self.lang = normalize_lang_code(lang)
         self.subscribers: set[asyncio.Queue[Optional[str]]] = set()
         self.task: Optional[asyncio.Task[None]] = None
         self.cancelled_by_user = False
+
+    @property
+    def job_key(self) -> str:
+        return f"{self.paper_id}:{self.lang}"
 
     def broadcast(self, event: str, payload: dict[str, Any]) -> None:
         msg = _sse_pack(event, payload)
@@ -57,15 +67,24 @@ class PaperStreamCoordinator:
         self._jobs: dict[str, PaperStreamJob] = {}
         self._lock = asyncio.Lock()
 
-    def _ensure_prebundle_ready(self, paper_id: str, force_reset: bool) -> PaperDocument:
-        doc = load_paper_doc(paper_id)
+    def _resolve_lang(self, lang: Optional[str]) -> str:
+        return normalize_lang_code(lang or get_effective_default_lang())
+
+    def _ensure_prebundle_ready(
+        self,
+        paper_id: str,
+        force_reset: bool,
+        lang: Optional[str] = None,
+    ) -> PaperDocument:
+        code = self._resolve_lang(lang)
+        doc = load_paper_doc(paper_id, lang=code)
         if doc is None:
             raise ValueError("논문을 찾을 수 없습니다.")
 
         raw_chunks = load_raw_chunks(paper_id)
         needs_migration = (not raw_chunks) or (doc.format_version < 3)
 
-        if needs_migration or force_reset:
+        if needs_migration:
             pdf_path = get_pdf_path(paper_id)
             if pdf_path is None:
                 raise ValueError("원본 PDF 파일을 찾을 수 없습니다.")
@@ -73,7 +92,7 @@ class PaperStreamCoordinator:
             fresh_doc, pdf_lines, fresh_chunks, media_assets = extract_pdf_prebundle(
                 pdf_bytes, filename=doc.filename
             )
-            # Preserve already-enriched bibliography entries & overview (when migrating, not force-resetting)
+            fresh_doc.lang = code
             if doc.references:
                 for rk, old_ref in doc.references.items():
                     if old_ref.enriched and rk in fresh_doc.references:
@@ -91,88 +110,111 @@ class PaperStreamCoordinator:
             )
             return fresh_doc
 
+        if force_reset:
+            # Reset ONLY this language's translation state while preserving extracted PDF chunks/media & other languages!
+            doc.lang = code
+            doc.overview = None
+            doc.sections = []
+            doc.sentences = []
+            doc.ai_status = "pending"
+            doc.ai_progress = 0
+            doc.ai_total_chunks = len(raw_chunks)
+            doc.ai_completed_chunks = 0
+            doc.ai_error = None
+            update_paper_doc(doc, lang=code)
+            return doc
+
         return doc
 
-    async def stop_job(self, paper_id: str) -> Optional[PaperDocument]:
+    async def stop_job(self, paper_id: str, lang: Optional[str] = None) -> Optional[PaperDocument]:
+        code = self._resolve_lang(lang)
+        jkey = f"{paper_id}:{code}"
         async with self._lock:
-            job = self._jobs.get(paper_id)
+            job = self._jobs.get(jkey)
             if job and job.task and not job.task.done():
                 job.cancelled_by_user = True
                 job.task.cancel()
         await asyncio.sleep(0.05)
-        return load_paper_doc(paper_id)
+        return load_paper_doc(paper_id, lang=code)
 
     async def run_to_completion(
         self,
         paper_id: str,
         engine: str = "auto",
         force: bool = False,
+        lang: Optional[str] = None,
     ) -> Optional[PaperDocument]:
         """Run or join a background paper translation job until it finishes (used by TranslationQueueManager)."""
+        code = self._resolve_lang(lang)
+        jkey = f"{paper_id}:{code}"
         if force:
-            await self.stop_job(paper_id)
+            await self.stop_job(paper_id, lang=code)
 
         async with self._lock:
-            existing_job = self._jobs.get(paper_id)
+            existing_job = self._jobs.get(jkey)
             if existing_job and existing_job.task and not existing_job.task.done():
                 task = existing_job.task
             else:
-                doc = self._ensure_prebundle_ready(paper_id, force_reset=force)
+                doc = self._ensure_prebundle_ready(paper_id, force_reset=force, lang=code)
                 if doc.ai_status == "completed" and not force and doc.sentences:
                     if doc.overview is None:
                         raw_chunks = load_raw_chunks(paper_id)
                         try:
-                            ov, _ = await generate_paper_overview(doc=doc, raw_chunks=raw_chunks, engine=engine)
+                            ov, _ = await generate_paper_overview(
+                                doc=doc, raw_chunks=raw_chunks, engine=engine, lang=code
+                            )
                             doc.overview = ov
-                            update_paper_doc(doc)
+                            update_paper_doc(doc, lang=code)
                         except Exception:
                             pass
                     return doc
 
-                job = PaperStreamJob(paper_id=paper_id, engine=engine)
+                job = PaperStreamJob(paper_id=paper_id, engine=engine, lang=code)
                 job.task = asyncio.create_task(self._run_job(job))
-                self._jobs[paper_id] = job
+                self._jobs[jkey] = job
                 task = job.task
 
         try:
             await task
         except asyncio.CancelledError:
             pass
-        return load_paper_doc(paper_id)
+        return load_paper_doc(paper_id, lang=code)
 
     async def subscribe(
         self,
         paper_id: str,
         engine: str = "auto",
         force: bool = False,
+        lang: Optional[str] = None,
     ) -> AsyncIterator[str]:
+        code = self._resolve_lang(lang)
+        jkey = f"{paper_id}:{code}"
         if force:
-            await self.stop_job(paper_id)
+            await self.stop_job(paper_id, lang=code)
 
         async with self._lock:
-            existing_job = self._jobs.get(paper_id)
+            existing_job = self._jobs.get(jkey)
             if existing_job and existing_job.task and not existing_job.task.done():
-                doc = load_paper_doc(paper_id)
+                doc = load_paper_doc(paper_id, lang=code)
                 if doc is None:
                     raise ValueError("논문을 찾을 수 없습니다.")
                 q: asyncio.Queue[Optional[str]] = asyncio.Queue()
                 existing_job.subscribers.add(q)
                 job = existing_job
             else:
-                doc = self._ensure_prebundle_ready(paper_id, force_reset=force)
+                doc = self._ensure_prebundle_ready(paper_id, force_reset=force, lang=code)
                 if doc.ai_status == "completed" and not force and doc.sentences:
                     yield _sse_pack("snapshot", {"paper": doc.model_dump()})
                     yield _sse_pack("complete", {"paper_id": paper_id, "total_sentences": len(doc.sentences)})
                     return
 
                 q = asyncio.Queue()
-                job = PaperStreamJob(paper_id=paper_id, engine=engine)
+                job = PaperStreamJob(paper_id=paper_id, engine=engine, lang=code)
                 job.subscribers.add(q)
                 job.task = asyncio.create_task(self._run_job(job))
-                self._jobs[paper_id] = job
+                self._jobs[jkey] = job
 
-        # Immediately push current state snapshot to newly connected client
-        current_doc = load_paper_doc(paper_id) or doc
+        current_doc = load_paper_doc(paper_id, lang=code) or doc
         yield _sse_pack("snapshot", {"paper": current_doc.model_dump()})
 
         try:
@@ -180,7 +222,6 @@ class PaperStreamCoordinator:
                 try:
                     msg = await asyncio.wait_for(q.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    # Keepalive comment so proxies / browsers never drop idle SSE connections
                     yield ": keepalive\n\n"
                     continue
                 if msg is None:
@@ -191,8 +232,10 @@ class PaperStreamCoordinator:
 
     async def _run_job(self, job: PaperStreamJob) -> None:
         paper_id = job.paper_id
+        code = job.lang
+        prof = get_lang_profile(code)
         try:
-            doc = load_paper_doc(paper_id)
+            doc = load_paper_doc(paper_id, lang=code)
             if doc is None:
                 return
             pdf_lines = load_pdf_lines(paper_id)
@@ -204,10 +247,11 @@ class PaperStreamCoordinator:
             total_chunks = max(1, len(raw_chunks))
             auth_year_idx = _build_author_year_index(doc.references)
 
+            doc.lang = code
             doc.ai_status = "streaming"
             doc.ai_error = None
             doc.ai_total_chunks = len(raw_chunks)
-            update_paper_doc(doc)
+            update_paper_doc(doc, lang=code)
 
             prev_section = doc.sections[-1] if doc.sections else ""
             start_chunk = max(0, min(doc.ai_completed_chunks, len(raw_chunks)))
@@ -221,7 +265,7 @@ class PaperStreamCoordinator:
                         "ai_progress": max(3, doc.ai_progress),
                         "chunk_index": start_chunk,
                         "total_chunks": len(raw_chunks),
-                        "current_section": "논문 핵심 요약 & Contribution",
+                        "current_section": prof.overview_section_label,
                     },
                 )
                 try:
@@ -229,6 +273,7 @@ class PaperStreamCoordinator:
                         doc=doc,
                         raw_chunks=raw_chunks,
                         engine=job.engine,
+                        lang=code,
                     )
                     doc.overview = overview
                     if overview.engine:
@@ -240,7 +285,7 @@ class PaperStreamCoordinator:
                         job.broadcast("title", {"title": doc.title})
                     if start_chunk == 0:
                         doc.ai_progress = max(doc.ai_progress, 8)
-                    update_paper_doc(doc)
+                    update_paper_doc(doc, lang=code)
                     job.broadcast(
                         "overview",
                         {
@@ -252,7 +297,6 @@ class PaperStreamCoordinator:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    # Never block section-by-section translation if overview encounters a transient error
                     pass
 
             job.broadcast(
@@ -276,6 +320,7 @@ class PaperStreamCoordinator:
                     total_chunks=len(raw_chunks),
                     prev_section=prev_section,
                     engine=job.engine,
+                    lang=code,
                 ):
                     doc.ai_engine = used_engine
 
@@ -283,7 +328,7 @@ class PaperStreamCoordinator:
                         m_name = str(rec.get("model") or "").strip()
                         if m_name:
                             doc.ai_model = m_name
-                            update_paper_doc(doc)
+                            update_paper_doc(doc, lang=code)
                             job.broadcast(
                                 "model_info",
                                 {"engine": used_engine, "model": m_name},
@@ -313,6 +358,12 @@ class PaperStreamCoordinator:
                         p_hint = chunk.start_page
 
                     slash_val = str(rec.get("slash") or "").strip() or None
+                    insight_val = str(rec.get("insight") or "").strip() or None
+                    # Strip any leaked helper suffix if LLM copied [INTERNAL_LABELS: ...] or [BODY_CLAIMS: ...]
+                    if "[INTERNAL_LABELS:" in en_val:
+                        en_val = en_val.split("[INTERNAL_LABELS:", 1)[0].strip()
+                    if "[BODY_CLAIMS:" in en_val:
+                        en_val = en_val.split("[BODY_CLAIMS:", 1)[0].strip()
 
                     sent_item = build_ai_sentence_item(
                         index=len(doc.sentences),
@@ -324,9 +375,9 @@ class PaperStreamCoordinator:
                         pdf_lines=pdf_lines,
                         references=doc.references,
                         auth_year_idx=auth_year_idx,
+                        insight=insight_val,
                     )
 
-                    # Match Figure / Table asset by media_id, label, or caption prefix
                     rec_mid = str(rec.get("media_id") or "").strip()
                     rec_label = str(rec.get("label") or "").strip().lower()
                     matched_asset = media_map.get(rec_mid) if rec_mid else None
@@ -363,7 +414,6 @@ class PaperStreamCoordinator:
                     doc.sentences.append(sent_item)
                     unsaved_count += 1
 
-                    # Fine-grained progress within current chunk
                     approx_pct = min(
                         99,
                         int(((idx + min(0.9, unsaved_count / 35.0)) / total_chunks) * 100),
@@ -383,12 +433,11 @@ class PaperStreamCoordinator:
                     )
 
                     if unsaved_count % 5 == 0:
-                        update_paper_doc(doc)
+                        update_paper_doc(doc, lang=code)
 
-                # Chunk finished cleanly -> commit checkpoint so resume works at chunk boundary
                 doc.ai_completed_chunks = idx + 1
                 doc.ai_progress = int((doc.ai_completed_chunks / total_chunks) * 100)
-                update_paper_doc(doc)
+                update_paper_doc(doc, lang=code)
 
                 job.broadcast(
                     "status",
@@ -403,7 +452,7 @@ class PaperStreamCoordinator:
 
             doc.ai_status = "completed"
             doc.ai_progress = 100
-            update_paper_doc(doc)
+            update_paper_doc(doc, lang=code)
             job.broadcast(
                 "complete",
                 {
@@ -413,10 +462,10 @@ class PaperStreamCoordinator:
                 },
             )
         except asyncio.CancelledError:
-            doc = load_paper_doc(paper_id)
+            doc = load_paper_doc(paper_id, lang=code)
             if doc is not None:
                 doc.ai_status = "paused"
-                update_paper_doc(doc)
+                update_paper_doc(doc, lang=code)
                 job.broadcast(
                     "paused",
                     {
@@ -427,17 +476,17 @@ class PaperStreamCoordinator:
                     },
                 )
         except Exception as exc:
-            doc = load_paper_doc(paper_id)
+            doc = load_paper_doc(paper_id, lang=code)
             if doc is not None:
                 doc.ai_status = "error"
                 doc.ai_error = str(exc)
-                update_paper_doc(doc)
+                update_paper_doc(doc, lang=code)
             job.broadcast("stream_error", {"detail": str(exc)})
         finally:
             job.close_all()
             async with self._lock:
-                if self._jobs.get(paper_id) is job:
-                    self._jobs.pop(paper_id, None)
+                if self._jobs.get(job.job_key) is job:
+                    self._jobs.pop(job.job_key, None)
 
 
 stream_coordinator = PaperStreamCoordinator()

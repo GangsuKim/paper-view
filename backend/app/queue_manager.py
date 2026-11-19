@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from .ai_service import get_effective_default_lang
+from .lang_profiles import normalize_lang_code
 from .models import PaperDocument, QueueItem, QueueStateResponse
 from .storage import DATA_DIR, ensure_dirs, load_paper_doc
 from .stream_manager import stream_coordinator
@@ -101,7 +103,7 @@ class TranslationQueueManager:
         changed = False
         for it in self.items:
             if it.status in ("running", "queued", "waiting_quota", "completed"):
-                doc = load_paper_doc(it.paper_id)
+                doc = load_paper_doc(it.paper_id, lang=it.lang)
                 if doc is not None:
                     if doc.title and doc.title != it.title:
                         it.title = doc.title
@@ -129,13 +131,16 @@ class TranslationQueueManager:
         doc: PaperDocument,
         engine: str = "claude",
         force: bool = False,
+        lang: Optional[str] = None,
     ) -> QueueItem:
+        code = normalize_lang_code(lang or doc.lang or get_effective_default_lang())
+        lang_doc = load_paper_doc(doc.paper_id, lang=code) or doc
         async with self._lock:
             for existing in self.items:
-                if existing.paper_id == doc.paper_id and existing.status in (
-                    "queued",
-                    "running",
-                    "waiting_quota",
+                if (
+                    existing.paper_id == doc.paper_id
+                    and normalize_lang_code(existing.lang) == code
+                    and existing.status in ("queued", "running", "waiting_quota")
                 ):
                     if existing.status != "running":
                         existing.engine = engine or existing.engine
@@ -146,13 +151,14 @@ class TranslationQueueManager:
                     self._wake()
                     return existing
 
-            init_prog = 0 if force else doc.ai_progress
+            init_prog = 0 if force else lang_doc.ai_progress
             item = QueueItem(
                 id=f"q_{uuid.uuid4().hex[:10]}",
                 paper_id=doc.paper_id,
-                title=doc.title,
+                title=lang_doc.title or doc.title,
                 filename=doc.filename,
                 engine=engine or "claude",
+                lang=code,
                 force_retranslate=force,
                 status="queued",
                 progress=init_prog,
@@ -169,7 +175,7 @@ class TranslationQueueManager:
         scheduled_time: Optional[str] = None,
         auto_retry_on_quota: Optional[bool] = None,
     ) -> QueueStateResponse:
-        stop_paper_id: Optional[str] = None
+        stop_paper_id: Optional[tuple[str, str]] = None
 
         async with self._lock:
             if auto_retry_on_quota is not None:
@@ -199,7 +205,7 @@ class TranslationQueueManager:
                 if self._current_running_id:
                     cur = next((x for x in self.items if x.id == self._current_running_id), None)
                     if cur:
-                        stop_paper_id = cur.paper_id
+                        stop_paper_id = (cur.paper_id, cur.lang)
             elif action == "resume":
                 self.paused = False
             elif action == "start_now":
@@ -221,24 +227,24 @@ class TranslationQueueManager:
             self._wake()
 
         if stop_paper_id:
-            await stream_coordinator.stop_job(stop_paper_id)
+            await stream_coordinator.stop_job(stop_paper_id[0], lang=stop_paper_id[1])
 
         return self.get_state()
 
     async def remove_item(self, item_id: str) -> QueueStateResponse:
-        stop_paper_id: Optional[str] = None
+        stop_paper_id: Optional[tuple[str, str]] = None
         async with self._lock:
             target = next((x for x in self.items if x.id == item_id), None)
             if target:
                 if target.status == "running":
                     self._cancelled_ids.add(item_id)
-                    stop_paper_id = target.paper_id
+                    stop_paper_id = (target.paper_id, target.lang)
                 self.items = [x for x in self.items if x.id != item_id]
                 self._save_to_disk()
                 self._wake()
 
         if stop_paper_id:
-            await stream_coordinator.stop_job(stop_paper_id)
+            await stream_coordinator.stop_job(stop_paper_id[0], lang=stop_paper_id[1])
         return self.get_state()
 
     async def move_item(self, item_id: str, direction: str) -> QueueStateResponse:
@@ -341,6 +347,7 @@ class TranslationQueueManager:
                     paper_id=next_item.paper_id,
                     engine=next_item.engine,
                     force=use_force,
+                    lang=next_item.lang,
                 )
 
                 async with self._lock:

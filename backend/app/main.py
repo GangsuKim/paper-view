@@ -21,15 +21,18 @@ from .ai_service import (
     analyze_sentence_sense_groups,
     discover_all_models_catalog,
     fetch_usage_status,
+    generate_media_author_insight,
     generate_paper_overview,
     get_claude_model_summary,
     get_effective_antigravity_model,
+    get_effective_default_lang,
     get_engines_status,
     resolve_display_model_for_engine,
     save_local_settings,
     stream_paper_chat_reply,
     summarize_cited_paper,
 )
+from .lang_profiles import list_supported_languages, normalize_lang_code
 from .citation_service import (
     collect_citing_sentences,
     download_pdf_from_url_or_arxiv,
@@ -46,6 +49,7 @@ from .models import (
     EngineSettingsRequest,
     GenerateOverviewRequest,
     ImportUrlRequest,
+    MediaInsightResponse,
     OpenLocalRequest,
     PaperDocument,
     PaperOverview,
@@ -60,7 +64,11 @@ from .models import (
     SummarizeCitationRequest,
     UsageStatusResponse,
 )
-from .pdf_parser import extract_pdf_prebundle
+from .pdf_parser import (
+    extract_pdf_prebundle,
+    extract_pdf_region_text,
+    find_media_citing_sentences,
+)
 from .queue_manager import queue_manager
 from .storage import (
     PROJECT_ROOT,
@@ -106,19 +114,25 @@ app.add_middleware(
 )
 
 
-def _ingest_pdf_bytes(pdf_bytes: bytes, filename: str) -> PaperDocument:
+def _ingest_pdf_bytes(
+    pdf_bytes: bytes,
+    filename: str,
+    lang: str | None = None,
+) -> PaperDocument:
     if len(pdf_bytes) < 16 or pdf_bytes[:4] != b"%PDF":
         raise HTTPException(status_code=400, detail="유효한 PDF 파일이 아닙니다.")
+    code = normalize_lang_code(lang or get_effective_default_lang())
     paper_id = compute_paper_id(pdf_bytes)
-    existing = load_paper_doc(paper_id)
-    if existing is not None:
+    existing_base = load_paper_doc(paper_id, lang="ko")
+    if existing_base is not None:
         has_chunks = bool(load_raw_chunks(paper_id))
-        if has_chunks and existing.format_version >= 3:
-            return existing
+        if has_chunks and existing_base.format_version >= 3:
+            return load_paper_doc(paper_id, lang=code) or existing_base
 
     doc, pdf_lines, raw_chunks, media_assets = extract_pdf_prebundle(pdf_bytes, filename=filename)
-    if existing is not None and existing.references:
-        doc.references = existing.references
+    doc.lang = code
+    if existing_base is not None and existing_base.references:
+        doc.references = existing_base.references
     save_paper(
         pdf_bytes,
         doc,
@@ -140,7 +154,11 @@ async def health() -> dict:
 
 @app.get("/api/engines")
 async def engines() -> dict:
-    return {"engines": get_engines_status()}
+    return {
+        "engines": get_engines_status(),
+        "languages": list_supported_languages(),
+        "selected_lang": get_effective_default_lang(),
+    }
 
 
 @app.get("/api/models")
@@ -148,6 +166,8 @@ async def get_available_models(refresh: bool = False) -> dict:
     return {
         "engines": get_engines_status(),
         "catalog": discover_all_models_catalog(refresh=refresh),
+        "languages": list_supported_languages(),
+        "selected_lang": get_effective_default_lang(),
     }
 
 
@@ -174,71 +194,83 @@ async def update_engine_settings(req: EngineSettingsRequest) -> dict:
         updates["antigravity_model"] = req.antigravity_model.strip()
     if req.antigravity_thinking_level is not None:
         updates["antigravity_thinking_level"] = req.antigravity_thinking_level.strip()
+    if req.default_lang is not None:
+        updates["default_lang"] = normalize_lang_code(req.default_lang)
     save_local_settings(updates)
     return {
         "engines": get_engines_status(),
         "catalog": discover_all_models_catalog(refresh=False),
+        "languages": list_supported_languages(),
+        "selected_lang": get_effective_default_lang(),
     }
 
 
 @app.get("/api/papers", response_model=list[PaperSummaryItem])
-async def get_papers() -> list[PaperSummaryItem]:
-    return list_papers()
+async def get_papers(lang: str | None = None) -> list[PaperSummaryItem]:
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    return list_papers(lang=code)
 
 
 @app.post("/api/papers/upload")
-async def upload_paper(file: UploadFile = File(...)) -> dict:
+async def upload_paper(
+    file: UploadFile = File(...),
+    lang: str | None = Form(None),
+) -> dict:
+    code = normalize_lang_code(lang or get_effective_default_lang())
     pdf_bytes = await file.read()
     filename = file.filename or "uploaded_paper.pdf"
-    doc = _ingest_pdf_bytes(pdf_bytes, filename)
+    doc = _ingest_pdf_bytes(pdf_bytes, filename, lang=code)
     return {
         "paper": doc,
-        "analyses": load_sentence_analyses(doc.paper_id),
-        "citation_summaries": load_citation_summaries(doc.paper_id),
+        "analyses": load_sentence_analyses(doc.paper_id, lang=code),
+        "citation_summaries": load_citation_summaries(doc.paper_id, lang=code),
     }
 
 
 @app.post("/api/papers/open-local")
 async def open_local_pdf(req: OpenLocalRequest) -> dict:
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
     path = Path(req.file_path).expanduser().resolve()
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"파일을 찾을 수 없습니다: {path}")
     if path.suffix.lower() != ".pdf":
         raise HTTPException(status_code=400, detail="PDF 파일(.pdf)만 열 수 있습니다.")
     pdf_bytes = path.read_bytes()
-    doc = _ingest_pdf_bytes(pdf_bytes, path.name)
+    doc = _ingest_pdf_bytes(pdf_bytes, path.name, lang=code)
     return {
         "paper": doc,
-        "analyses": load_sentence_analyses(doc.paper_id),
-        "citation_summaries": load_citation_summaries(doc.paper_id),
+        "analyses": load_sentence_analyses(doc.paper_id, lang=code),
+        "citation_summaries": load_citation_summaries(doc.paper_id, lang=code),
     }
 
 
 @app.post("/api/papers/import-url")
 async def import_paper_from_url(req: ImportUrlRequest) -> dict:
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
     try:
         pdf_bytes, filename = await download_pdf_from_url_or_arxiv(req.url_or_arxiv)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"논문 다운로드 실패: {exc}") from exc
-    doc = _ingest_pdf_bytes(pdf_bytes, filename)
+    doc = _ingest_pdf_bytes(pdf_bytes, filename, lang=code)
     return {
         "paper": doc,
-        "analyses": load_sentence_analyses(doc.paper_id),
-        "citation_summaries": load_citation_summaries(doc.paper_id),
+        "analyses": load_sentence_analyses(doc.paper_id, lang=code),
+        "citation_summaries": load_citation_summaries(doc.paper_id, lang=code),
     }
 
 
 @app.get("/api/papers/{paper_id}")
-async def get_paper(paper_id: str) -> dict:
-    doc = load_paper_doc(paper_id)
+async def get_paper(paper_id: str, lang: str | None = None) -> dict:
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
     if doc.format_version < 3:
-        doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False)
+        doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False, lang=code)
     return {
         "paper": doc,
-        "analyses": load_sentence_analyses(paper_id),
-        "citation_summaries": load_citation_summaries(paper_id),
+        "analyses": load_sentence_analyses(paper_id, lang=code),
+        "citation_summaries": load_citation_summaries(paper_id, lang=code),
     }
 
 
@@ -271,17 +303,19 @@ async def stream_paper_translation(
     paper_id: str,
     engine: str = "auto",
     force: bool = False,
+    lang: str | None = None,
 ) -> StreamingResponse:
     """
     SSE endpoint that runs AI section segmentation (Abstract / Introduction / ...)
-    and streams sentence-by-sentence Korean translations as soon as each sentence is produced.
+    and streams sentence-by-sentence translations in the chosen target language.
     """
-    doc = load_paper_doc(paper_id)
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
 
     return StreamingResponse(
-        stream_coordinator.subscribe(paper_id=paper_id, engine=engine, force=force),
+        stream_coordinator.subscribe(paper_id=paper_id, engine=engine, force=force, lang=code),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -292,8 +326,9 @@ async def stream_paper_translation(
 
 
 @app.post("/api/papers/{paper_id}/stop-stream")
-async def stop_paper_stream(paper_id: str) -> dict:
-    doc = await stream_coordinator.stop_job(paper_id)
+async def stop_paper_stream(paper_id: str, lang: str | None = None) -> dict:
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    doc = await stream_coordinator.stop_job(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
     return {"paper": doc}
@@ -305,15 +340,16 @@ async def create_or_refresh_paper_overview(
     req: GenerateOverviewRequest,
 ) -> PaperOverview:
     """Generate or refresh the top-of-paper Summary & Contributions card."""
-    doc = load_paper_doc(paper_id)
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
 
-    if not req.force and doc.overview is not None:
+    if not req.force and doc.overview is not None and normalize_lang_code(doc.overview.lang) == code:
         return doc.overview
 
     if doc.format_version < 3 or not load_raw_chunks(paper_id):
-        doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False)
+        doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False, lang=code)
 
     raw_chunks = load_raw_chunks(paper_id)
     try:
@@ -321,16 +357,93 @@ async def create_or_refresh_paper_overview(
             doc=doc,
             raw_chunks=raw_chunks,
             engine=req.engine,
+            lang=code,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    latest_doc = load_paper_doc(paper_id) or doc
+    latest_doc = load_paper_doc(paper_id, lang=code) or doc
     latest_doc.overview = overview
     if clean_title and len(clean_title) >= 6 and latest_doc.title.endswith(".pdf"):
         latest_doc.title = clean_title
-    update_paper_doc(latest_doc)
+    update_paper_doc(latest_doc, lang=code)
     return overview
+
+
+@app.post(
+    "/api/papers/{paper_id}/sentences/{sentence_id}/media-insight",
+    response_model=MediaInsightResponse,
+)
+async def create_or_refresh_media_insight(
+    paper_id: str,
+    sentence_id: str,
+    req: GenerateOverviewRequest,
+) -> MediaInsightResponse:
+    """Generate or refresh the Author's Core Claim / Takeaway explanation for a Figure or Table."""
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
+
+    target = next((s for s in doc.sentences if s.id == sentence_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="해당 Figure/Table 항목을 찾을 수 없습니다.")
+
+    if not req.force and target.insight:
+        return MediaInsightResponse(
+            sentence_id=target.id,
+            insight=target.insight,
+            engine=doc.ai_engine,
+            model_name=doc.ai_model,
+        )
+
+    raw_chunks = load_raw_chunks(paper_id)
+    prose_sources = (
+        [c.text for c in raw_chunks]
+        if raw_chunks
+        else [s.text for s in doc.sentences if s.kind == "sentence"]
+    )
+    media_label = target.media_label or ("Table" if target.kind == "table" else "Figure")
+    citing_sents = find_media_citing_sentences(
+        label=media_label,
+        kind=target.kind or "figure",
+        prose_texts=prose_sources,
+        max_hits=5,
+    )
+
+    pdf_path = get_pdf_path(paper_id)
+    inner_text = ""
+    if pdf_path is not None and target.bboxes:
+        inner_text = extract_pdf_region_text(pdf_path, target.page, target.bboxes[0])
+
+    try:
+        insight_txt, used_eng, used_mod = await generate_media_author_insight(
+            paper_title=doc.title,
+            media_kind=target.kind or "figure",
+            media_label=media_label,
+            caption_en=target.text,
+            citing_body_sentences=citing_sents,
+            internal_labels_text=inner_text,
+            paper_tldr=(doc.overview.tldr if doc.overview else ""),
+            engine=req.engine,
+            lang=code,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    latest_doc = load_paper_doc(paper_id, lang=code) or doc
+    for s in latest_doc.sentences:
+        if s.id == sentence_id:
+            s.insight = insight_txt
+            break
+    update_paper_doc(latest_doc, lang=code)
+
+    return MediaInsightResponse(
+        sentence_id=sentence_id,
+        insight=insight_txt,
+        engine=used_eng,
+        model_name=used_mod,
+    )
 
 
 @app.post(
@@ -342,12 +455,13 @@ async def analyze_sentence(
     sentence_id: str,
     req: AnalyzeSentenceRequest,
 ) -> SentenceAnalysis:
-    doc = load_paper_doc(paper_id)
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
 
     if not req.force:
-        cached = load_sentence_analyses(paper_id).get(sentence_id)
+        cached = load_sentence_analyses(paper_id, lang=code).get(sentence_id)
         if cached is not None and (req.engine == "auto" or cached.engine == req.engine):
             return cached
 
@@ -361,11 +475,12 @@ async def analyze_sentence(
             section=target.section,
             sentence=target,
             engine=req.engine,
+            lang=code,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    save_sentence_analysis(paper_id, analysis)
+    save_sentence_analysis(paper_id, analysis, lang=code)
     return analysis
 
 
@@ -377,11 +492,12 @@ async def analyze_sentences_batch(
     paper_id: str,
     req: AnalyzeBatchRequest,
 ) -> list[SentenceAnalysis]:
-    doc = load_paper_doc(paper_id)
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
 
-    existing = load_sentence_analyses(paper_id)
+    existing = load_sentence_analyses(paper_id, lang=code)
     by_id = {s.id: s for s in doc.sentences}
 
     to_run = [
@@ -399,12 +515,13 @@ async def analyze_sentences_batch(
             paper_title=doc.title,
             sentences=to_run[:8],
             engine=req.engine,
+            lang=code,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     for item in fresh:
-        save_sentence_analysis(paper_id, item)
+        save_sentence_analysis(paper_id, item, lang=code)
 
     return already + fresh
 
@@ -413,12 +530,17 @@ async def analyze_sentences_batch(
     "/api/papers/{paper_id}/citations/{ref_key}",
     response_model=CitationMetadataResponse,
 )
-async def get_citation_metadata(paper_id: str, ref_key: str) -> CitationMetadataResponse:
+async def get_citation_metadata(
+    paper_id: str,
+    ref_key: str,
+    lang: str | None = None,
+) -> CitationMetadataResponse:
     """Stage 1: Return citation title, authors, year, venue, links, and citing context WITHOUT running AI summary."""
-    doc = load_paper_doc(paper_id)
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
-    return await resolve_citation_metadata(doc, ref_key)
+    return await resolve_citation_metadata(doc, ref_key, lang=code)
 
 
 @app.post(
@@ -430,14 +552,14 @@ async def summarize_citation(
     ref_key: str,
     req: SummarizeCitationRequest,
 ) -> CitationSummaryResponse:
-    """Stage 2: Triggered when user clicks [간단 요약] — fetches full-text/abstract and generates concise AI summary."""
-    doc = load_paper_doc(paper_id)
+    """Stage 2: Triggered when user clicks Quick Summary — fetches full-text/abstract and generates concise AI summary."""
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
 
-    # Step 1: Always check arXiv by paper title FIRST so IEEE / paywalled venues resolve to arXiv when available
-    await resolve_citation_metadata(doc, ref_key, force_arxiv_check=req.force)
-    doc = load_paper_doc(paper_id) or doc
+    await resolve_citation_metadata(doc, ref_key, force_arxiv_check=req.force, lang=code)
+    doc = load_paper_doc(paper_id, lang=code) or doc
 
     ref_entry = doc.references.get(ref_key)
     if ref_entry is None:
@@ -450,8 +572,7 @@ async def summarize_citation(
         )
 
     if not req.force:
-        cached = load_citation_summaries(paper_id).get(ref_key)
-        # If an arXiv full-text PDF was newly discovered for a citation that previously only had abstract/context summary, upgrade it!
+        cached = load_citation_summaries(paper_id, lang=code).get(ref_key)
         has_newly_found_arxiv_pdf = bool(ref_entry.arxiv_id) and (
             cached is not None and cached.source_type != "fulltext_pdf"
         )
@@ -461,11 +582,11 @@ async def summarize_citation(
             and (req.engine == "auto" or cached.engine == req.engine)
         ):
             if cached.main_figure_url is None and (ref_entry.arxiv_id or ref_entry.pdf_url):
-                _, _, _, m_url, m_cap = await fetch_cited_paper_content(ref_entry)
+                _, _, _, m_url, m_cap = await fetch_cited_paper_content(ref_entry, lang=code)
                 if m_url:
                     cached.main_figure_url = m_url
                     cached.main_figure_caption = m_cap
-                    save_citation_summary(paper_id, cached)
+                    save_citation_summary(paper_id, cached, lang=code)
             return cached
 
     (
@@ -474,8 +595,12 @@ async def summarize_citation(
         source_label,
         main_fig_url,
         main_fig_cap,
-    ) = await fetch_cited_paper_content(ref_entry)
+    ) = await fetch_cited_paper_content(ref_entry, lang=code)
     citing_contexts = collect_citing_sentences(doc, ref_key)
+    if not citing_contexts and code != "ko":
+        base_doc = load_paper_doc(paper_id, lang="ko")
+        if base_doc and base_doc.sentences:
+            citing_contexts = collect_citing_sentences(base_doc, ref_key)
 
     try:
         summary = await summarize_cited_paper(
@@ -488,54 +613,59 @@ async def summarize_citation(
             engine=req.engine,
             main_figure_url=main_fig_url,
             main_figure_caption=main_fig_cap,
+            lang=code,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    save_citation_summary(paper_id, summary)
+    save_citation_summary(paper_id, summary, lang=code)
     return summary
 
 
 @app.get("/api/papers/{paper_id}/chat")
-async def get_paper_chat(paper_id: str) -> dict:
-    doc = load_paper_doc(paper_id)
+async def get_paper_chat(paper_id: str, lang: str | None = None) -> dict:
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
-    return {"messages": load_chat_history(paper_id)}
+    return {"messages": load_chat_history(paper_id, lang=code)}
 
 
 @app.delete("/api/papers/{paper_id}/chat")
-async def reset_paper_chat(paper_id: str) -> dict:
-    doc = load_paper_doc(paper_id)
+async def reset_paper_chat(paper_id: str, lang: str | None = None) -> dict:
+    code = normalize_lang_code(lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
-    clear_chat_history(paper_id)
+    clear_chat_history(paper_id, lang=code)
     return {"messages": []}
 
 
 @app.post("/api/papers/{paper_id}/chat/stream")
 async def stream_paper_chat(paper_id: str, req: ChatStreamRequest) -> StreamingResponse:
-    doc = load_paper_doc(paper_id)
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
     if doc is None:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="질문 내용을 입력해주세요.")
 
     if doc.format_version < 3 or not load_raw_chunks(paper_id):
-        doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False)
+        doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False, lang=code)
 
     raw_chunks = load_raw_chunks(paper_id)
-    history = load_chat_history(paper_id)
+    history = load_chat_history(paper_id, lang=code)
 
     user_msg = ChatMessage(
         id=f"u_{uuid.uuid4().hex[:10]}",
         role="user",
         content=req.message.strip(),
         context_snippet=(req.context_snippet.strip() if req.context_snippet else None),
+        lang=code,
         created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
     )
     history.append(user_msg)
-    save_chat_history(paper_id, history)
+    save_chat_history(paper_id, history, lang=code)
 
     async def _gen():
         assistant_id = f"a_{uuid.uuid4().hex[:10]}"
@@ -554,6 +684,7 @@ async def stream_paper_chat(paper_id: str, req: ChatStreamRequest) -> StreamingR
                 context_snippet=user_msg.context_snippet,
                 engine=req.engine,
                 response_style=req.response_style,
+                lang=code,
             ):
                 used_engine = eng_id
                 if m_name and m_name != detected_model:
@@ -568,14 +699,15 @@ async def stream_paper_chat(paper_id: str, req: ChatStreamRequest) -> StreamingR
             assistant_msg = ChatMessage(
                 id=assistant_id,
                 role="assistant",
-                content=full_reply or "(응답이 비어 있습니다)",
+                content=full_reply or "(Empty reply)",
                 engine=used_engine,
                 model_name=final_model,
+                lang=code,
                 created_at=dt.datetime.now(dt.timezone.utc).isoformat(),
             )
-            updated_hist = load_chat_history(paper_id)
+            updated_hist = load_chat_history(paper_id, lang=code)
             updated_hist.append(assistant_msg)
-            save_chat_history(paper_id, updated_hist)
+            save_chat_history(paper_id, updated_hist, lang=code)
             yield f"event: done\ndata: {json.dumps({'assistant_message': assistant_msg.model_dump()}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             yield f"event: error\ndata: {json.dumps({'detail': str(exc)}, ensure_ascii=False)}\n\n"
@@ -602,20 +734,23 @@ async def enqueue_uploaded_pdfs(
     files: list[UploadFile] = File(...),
     engine: str = Form("claude"),
     force: bool = Form(False),
+    lang: str | None = Form(None),
 ) -> QueueStateResponse:
     if not files:
         raise HTTPException(status_code=400, detail="업로드할 PDF 파일을 선택해주세요.")
+    code = normalize_lang_code(lang or get_effective_default_lang())
     for f in files:
         pdf_bytes = await f.read()
         if len(pdf_bytes) < 16 or pdf_bytes[:4] != b"%PDF":
             continue
-        doc = _ingest_pdf_bytes(pdf_bytes, f.filename or "queued_paper.pdf")
-        await queue_manager.enqueue_paper(doc, engine=engine, force=force)
+        doc = _ingest_pdf_bytes(pdf_bytes, f.filename or "queued_paper.pdf", lang=code)
+        await queue_manager.enqueue_paper(doc, engine=engine, force=force, lang=code)
     return queue_manager.get_state()
 
 
 @app.post("/api/queue/urls", response_model=QueueStateResponse)
 async def enqueue_urls_or_arxivs(req: QueueAddUrlsRequest) -> QueueStateResponse:
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
     errors: list[str] = []
     added_any = False
     for raw_target in req.urls_or_arxivs:
@@ -624,8 +759,8 @@ async def enqueue_urls_or_arxivs(req: QueueAddUrlsRequest) -> QueueStateResponse
             continue
         try:
             pdf_bytes, filename = await download_pdf_from_url_or_arxiv(t)
-            doc = _ingest_pdf_bytes(pdf_bytes, filename)
-            await queue_manager.enqueue_paper(doc, engine=req.engine, force=req.force)
+            doc = _ingest_pdf_bytes(pdf_bytes, filename, lang=code)
+            await queue_manager.enqueue_paper(doc, engine=req.engine, force=req.force, lang=code)
             added_any = True
         except Exception as exc:
             errors.append(f"{t}: {exc}")
@@ -636,10 +771,11 @@ async def enqueue_urls_or_arxivs(req: QueueAddUrlsRequest) -> QueueStateResponse
 
 @app.post("/api/queue/papers", response_model=QueueStateResponse)
 async def enqueue_existing_papers(req: QueueAddPapersRequest) -> QueueStateResponse:
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
     for pid in req.paper_ids:
-        doc = load_paper_doc(pid)
+        doc = load_paper_doc(pid, lang=code)
         if doc is not None:
-            await queue_manager.enqueue_paper(doc, engine=req.engine, force=req.force)
+            await queue_manager.enqueue_paper(doc, engine=req.engine, force=req.force, lang=code)
     return queue_manager.get_state()
 
 
