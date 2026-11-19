@@ -1,0 +1,19 @@
+# Python
+backend/venv/
+__pycache__/
+*.py[cod]
+
+# Node
+frontend/node_modules/
+frontend/dist/
+vscode-extension/node_modules/
+vscode-extension/out/
+*.vsix
+
+# Local Paper Cache & Secrets
+.paperview_data/
+backend/.paperview_data/
+.env
+.env.*
+.DS_Store
+Thumbs.db

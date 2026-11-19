@@ -1,0 +1,78 @@
+{
+  "name": "paper-view-vscode",
+  "displayName": "PaperView — Local AI Paper Reader",
+  "description": "Moonlight 스타일 영어 논문 문장·의미 단위 리더 및 인용 논문 즉시 요약 (Local Claude CLI & Antigravity SDK 기반)",
+  "version": "0.1.0",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Education"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "paperview.openReader",
+        "title": "PaperView: 논문 리더 패널 열기 (VS Code 내부)"
+      },
+      {
+        "command": "paperview.openPdfInReader",
+        "title": "PaperView로 논문 열기 (문장 끊어읽기 · 인용 요약)"
+      },
+      {
+        "command": "paperview.openInBrowser",
+        "title": "PaperView: 외부 웹 브라우저에서 사이트 열기"
+      },
+      {
+        "command": "paperview.stopServer",
+        "title": "PaperView: 로컬 백엔드 서버 중지"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceExtname == .pdf",
+          "command": "paperview.openPdfInReader",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "when": "resourceExtname == .pdf",
+          "command": "paperview.openPdfInReader",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "PaperView",
+      "properties": {
+        "paperview.port": {
+          "type": "number",
+          "default": 8787,
+          "description": "PaperView 로컬 서버 포트 번호"
+        },
+        "paperview.projectRoot": {
+          "type": "string",
+          "default": "",
+          "description": "paper-view-dev 루트 경로 (비워두면 확장 폴더 또는 현재 워크스페이스에서 자동 탐색)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.6.2"
+  }
+}
