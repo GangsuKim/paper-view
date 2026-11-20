@@ -5,6 +5,7 @@ import re
 import statistics
 from pathlib import Path
 from typing import Optional, Union
+from urllib.parse import urlsplit
 
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24.3
@@ -16,6 +17,7 @@ from .models import (
     InlineCitation,
     MediaAsset,
     PaperDocument,
+    PaperResourceLink,
     PdfLineRecord,
     RawBodyChunk,
     ReferenceEntry,
@@ -743,6 +745,9 @@ def parse_pdf_bytes(pdf_bytes: bytes, filename: str) -> PaperDocument:
         body_font_size = statistics.median(all_font_sizes) if all_font_sizes else 10.0
         first_blocks = all_pages_blocks[0][1] if all_pages_blocks else []
         title = _detect_title(doc, first_blocks, filename)
+        detected_arxiv_id, detected_links = _extract_links_from_fitz_doc(
+            doc, title=title, filename=filename
+        )
 
         sections: list[str] = []
         current_section = "Overview"
@@ -1166,7 +1171,18 @@ def _detect_and_crop_page_media(
                     vy0 = min(r[1] for r in vis_below)
                     vx1 = max(r[2] for r in vis_below)
                     vy1 = max(r[3] for r in vis_below)
+                    fig_snippets_below: list[str] = []
+                    for ob in blocks:
+                        if ob is cb or ob["id"] in caption_ids or is_anchor_prose(ob):
+                            continue
+                        ox0, oy0, ox1, oy1 = ob["bbox"]
+                        if in_x_scope(ox0, ox1) and oy0 >= cy1 - 2.0 and oy1 <= min(y_floor + 2.0, vy1 + 14.0):
+                            vx0, vy0 = min(vx0, ox0), min(vy0, oy0)
+                            vx1, vy1 = max(vx1, ox1), max(vy1, oy1)
+                            consumed_ids.add(ob["id"])
+                            fig_snippets_below.append(_clean_spaces(" ".join(l["text"] for l in ob["lines"])))
                     crop_box = (vx0, vy0, vx1, vy1)
+                    table_hint_text = " | ".join(fig_snippets_below)[:450]
 
         else:  # kind == "table"
             # 1) Check below caption (standard IEEE/CVPR/NeurIPS booktabs table)
@@ -1333,6 +1349,387 @@ def extract_pdf_region_text(pdf_path: Path, page_num: int, bbox: Optional[BBox])
         doc.close()
 
 
+def extract_pdf_regions_batch(
+    pdf_path: Optional[Path],
+    targets: list[tuple[str, int, Optional[BBox]]],
+) -> dict[str, str]:
+    """Extract interior labels/numbers for multiple Figure/Table regions opening `source.pdf` only once."""
+    if pdf_path is None or not pdf_path.exists() or not targets:
+        return {}
+    out: dict[str, str] = {}
+    doc = fitz.open(str(pdf_path))
+    try:
+        for sid, page_num, bbox in targets:
+            if bbox is None:
+                out[sid] = ""
+                continue
+            try:
+                idx = max(0, min(len(doc) - 1, page_num - 1))
+                page = doc[idx]
+                pw, ph = max(page.rect.width, 1.0), max(page.rect.height, 1.0)
+                rect = fitz.Rect(bbox.x0 * pw, bbox.y0 * ph, bbox.x1 * pw, bbox.y1 * ph)
+                blocks = page.get_text("blocks", clip=rect)
+                parts: list[str] = []
+                for b in blocks:
+                    if len(b) >= 5 and isinstance(b[4], str):
+                        txt = _clean_spaces(b[4])
+                        if txt and not FIG_CAPTION_RE.match(txt) and not TAB_CAPTION_RE.match(txt):
+                            parts.append(txt)
+                out[sid] = " | ".join(parts)[:650]
+            except Exception:
+                out[sid] = ""
+        return out
+    finally:
+        doc.close()
+
+
+_GENERIC_FRAMEWORK_REPOS = {
+    "pytorch/pytorch",
+    "tensorflow/tensorflow",
+    "google/jax",
+    "huggingface/transformers",
+    "huggingface/diffusers",
+    "huggingface/peft",
+    "huggingface/accelerate",
+    "huggingface/datasets",
+    "open-mmlab/mmdetection",
+    "open-mmlab/mmsegmentation",
+    "facebookresearch/detectron2",
+    "ultralytics/ultralytics",
+    "langchain-ai/langchain",
+    "vllm-project/vllm",
+}
+
+_TITLE_STOP_TOKENS = {
+    "the", "and", "for", "with", "from", "via", "using", "based", "towards", "toward",
+    "into", "over", "under", "learning", "deep", "neural", "network", "networks",
+    "model", "models", "modeling", "large", "language", "vision", "image", "images",
+    "video", "data", "analysis", "framework", "method", "methods", "efficient",
+    "fast", "novel", "multi", "multimodal", "self", "supervised", "pre", "training",
+    "generation", "prediction", "classification", "segmentation", "detection",
+}
+
+_TEXT_RESOURCE_URL_RE = re.compile(
+    r"(?:https?://(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org|codeocean\.com|huggingface\.co|hf\.co|zenodo\.org|figshare\.com|osf\.io|[a-z0-9\-]+\.github\.io|[a-z0-9\-]+\.gitlab\.io)/[^\s<>\"'\]\)\}]+)"
+    r"|(?:(?<![A-Za-z0-9@/])(?:github\.com|gitlab\.com|bitbucket\.org|huggingface\.co|hf\.co)/[A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-/]+)",
+    re.IGNORECASE,
+)
+
+_AUTHOR_OWNERSHIP_CUES = (
+    "our code",
+    "our source code",
+    "our implementation",
+    "our model",
+    "our models",
+    "our dataset",
+    "our data",
+    "our project",
+    "our repository",
+    "our weights",
+    "our checkpoints",
+    "we release",
+    "we open-source",
+    "we open source",
+    "we make our",
+    "we provide our",
+    "code we used",
+    "code is available",
+    "source code is available",
+    "implementation is available",
+    "models are available",
+    "weights are available",
+    "data and code",
+    "code and data",
+    "code and models",
+    "code and weights",
+    "publicly available at",
+    "publicly released",
+    "open-sourced at",
+    "code availability",
+    "data availability",
+    "reproducibility",
+    "project page",
+    "project website",
+    "official implementation",
+    "code:",
+    "github:",
+    "huggingface:",
+    "hugging face:",
+)
+
+_THIRD_PARTY_BASELINE_CUES = (
+    "adapted from",
+    "borrowed from",
+    "downloaded from",
+    "obtained from",
+    "taken from",
+    "retrieved from",
+    "baseline implementation",
+    "existing package",
+    "following the implementation",
+)
+
+
+def normalize_and_classify_resource_url(raw_url: str) -> Optional[tuple[str, str, str]]:
+    """
+    Validate and canonicalize a candidate Code / Hugging Face / Dataset / Project URL.
+    Returns `(kind, display_label, canonical_url)` or `None` if invalid/boilerplate.
+    """
+    if not raw_url:
+        return None
+    u = raw_url.strip().rstrip(".,;:!?)>]}'\"”’")
+    u = u.lstrip("(<[{'\"“‘")
+    if not u:
+        return None
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u
+
+    try:
+        sp = urlsplit(u)
+    except Exception:
+        return None
+
+    host = (sp.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = re.sub(r"/+", "/", sp.path or "").rstrip("/")
+    parts = [p for p in path.split("/") if p]
+
+    # 1. Hugging Face (Models / Datasets / Spaces / Collections / Org)
+    if host in ("huggingface.co", "hf.co"):
+        if not parts:
+            return None
+        first = parts[0].lower()
+        if first in ("papers", "docs", "blog", "join", "login", "pricing", "settings", "tasks", "chat"):
+            return None
+        if first in ("datasets", "spaces", "collections"):
+            if len(parts) < 2:
+                return None
+            slug = "/".join(parts[1:3])
+            return ("huggingface", f"{first}/{slug}", f"https://huggingface.co/{first}/{slug}")
+        slug = "/".join(parts[:2])
+        if len(parts) == 1 and len(parts[0]) < 3:
+            return None
+        return ("huggingface", slug, f"https://huggingface.co/{slug}")
+
+    # 2. Code Repositories (GitHub / GitLab / Bitbucket / Code Ocean)
+    if host in ("github.com", "gitlab.com", "bitbucket.org"):
+        if not parts:
+            return None
+        owner = parts[0]
+        if owner.lower() in {
+            "orgs", "topics", "features", "about", "pricing", "login",
+            "settings", "site", "sponsors", "explore", "marketplace", "trending",
+        }:
+            return None
+        if len(parts) == 1:
+            if len(owner) < 3:
+                return None
+            return ("code", owner, f"https://{host}/{owner}")
+        repo = re.sub(r"\.git$", "", parts[1], flags=re.IGNORECASE)
+        if not repo:
+            return None
+        # Preserve monorepo subdirectories (e.g. google-research/google-research/tree/master/project)
+        if len(parts) >= 4 and parts[2].lower() == "tree":
+            sub_path = "/".join(parts[2:])
+            leaf = parts[-1]
+            return ("code", f"{owner}/{leaf}", f"https://{host}/{owner}/{repo}/{sub_path}")
+        return ("code", f"{owner}/{repo}", f"https://{host}/{owner}/{repo}")
+
+    if host == "codeocean.com" and parts and parts[0].lower() == "capsule":
+        slug = "/".join(parts[:2])
+        return ("code", "Code Ocean", f"https://codeocean.com/{slug}")
+
+    # 3. Dataset Archives (Zenodo / Figshare / OSF)
+    if host in ("zenodo.org", "figshare.com", "osf.io") and parts:
+        return ("dataset", host.split(".")[0].capitalize(), f"https://{host}{path}")
+
+    # 4. Official Project Pages (*.github.io / *.gitlab.io)
+    if (host.endswith(".github.io") or host.endswith(".gitlab.io")):
+        sub = host.split(".")[0]
+        if sub and sub not in ("pages", "www"):
+            lbl = f"{host}{path}" if path else host
+            return ("project", lbl[:42], f"https://{host}{path}")
+
+    return None
+
+
+def _distinctive_title_tokens(title: str) -> set[str]:
+    tokens: set[str] = set()
+    if not title:
+        return tokens
+    # Capture acronyms / method names before colon (e.g., "MCToGene: ...", "SAMP-Net: ...")
+    head = title.split(":", 1)[0].strip()
+    if 3 <= len(head) <= 24:
+        clean_head = re.sub(r"[^a-z0-9]+", "", head.lower())
+        if len(clean_head) >= 3 and clean_head not in _TITLE_STOP_TOKENS:
+            tokens.add(clean_head)
+    for raw_w in re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]{2,}", title):
+        w = raw_w.lower().replace("-", "")
+        if len(w) >= 4 and w not in _TITLE_STOP_TOKENS:
+            tokens.add(w)
+    return tokens
+
+
+def _extract_links_from_fitz_doc(
+    doc: fitz.Document,
+    title: str = "",
+    filename: str = "",
+) -> tuple[Optional[str], list[PaperResourceLink]]:
+    """Extract paper's own arXiv ID and author-provided Code / Hugging Face / Project links from an open fitz.Document."""
+    arxiv_id: Optional[str] = None
+    if len(doc) > 0:
+        p1_raw = doc[0].get_text("text") or ""
+        m_arx = ARXIV_RE.search(p1_raw)
+        if m_arx:
+            arxiv_id = re.sub(r"v\d+$", "", m_arx.group(1), flags=re.IGNORECASE)
+    if not arxiv_id and filename:
+        m_fn = re.search(r"(?:^|arxiv[_-]|/)(\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?$", Path(filename).name, re.IGNORECASE)
+        if m_fn:
+            arxiv_id = m_fn.group(1)
+
+    # Locate References boundary `(ref_page_idx, ref_y0)` so bibliography URLs are excluded
+    ref_page_idx: Optional[int] = None
+    ref_y0: float = 0.0
+    for p_idx in range(len(doc)):
+        for b in doc[p_idx].get_text("blocks"):
+            if len(b) < 5 or not isinstance(b[4], str):
+                continue
+            b_txt = _clean_spaces(b[4])
+            if b_txt and len(b_txt) <= 85 and REF_HEADING_RE.match(b_txt):
+                ref_page_idx = p_idx
+                ref_y0 = float(b[1])
+                break
+        if ref_page_idx is not None:
+            break
+
+    title_tokens = _distinctive_title_tokens(title)
+    best_by_url: dict[str, tuple[int, int, PaperResourceLink]] = {}  # canonical_url -> (score, order, link)
+    order_seq = 0
+
+    for p_idx in range(len(doc)):
+        if ref_page_idx is not None and p_idx > ref_page_idx:
+            break
+        page = doc[p_idx]
+        pw, ph = max(page.rect.width, 1.0), max(page.rect.height, 1.0)
+        y_limit = (ref_y0 - 3.0) if (ref_page_idx == p_idx) else (ph + 10.0)
+
+        candidates_on_page: list[tuple[str, str]] = []  # (raw_url, surrounding_context)
+
+        # 1) Exact PDF hyperlink annotations (`\href{...}`, `\url{...}`)
+        for lk in page.get_links():
+            uri = str(lk.get("uri") or "").strip()
+            if not uri:
+                continue
+            from_rect = lk.get("from")
+            if from_rect is not None and float(from_rect.y0) >= y_limit:
+                continue
+            ctx = ""
+            if from_rect is not None:
+                ctx_rect = fitz.Rect(
+                    0.0,
+                    max(0.0, float(from_rect.y0) - 28.0),
+                    pw,
+                    min(y_limit, float(from_rect.y1) + 28.0),
+                )
+                ctx = _clean_spaces(page.get_text("text", clip=ctx_rect) or "")
+            candidates_on_page.append((uri, ctx))
+
+        # 2) Plain-text URLs (repairing PDF column line-wraps inside URLs)
+        clip_area = fitz.Rect(0.0, 0.0, pw, max(1.0, y_limit))
+        raw_page_txt = page.get_text("text", clip=clip_area) or ""
+        repaired_txt = re.sub(
+            r"(https?://[^\s\n]*[/\-_.])\s*\n\s*([A-Za-z0-9])",
+            r"\1\2",
+            raw_page_txt,
+        )
+        repaired_txt = re.sub(
+            r"((?:github\.com|gitlab\.com|huggingface\.co|hf\.co)/[A-Za-z0-9_.\-]*[/\-_])\s*\n\s*([A-Za-z0-9])",
+            r"\1\2",
+            repaired_txt,
+            flags=re.IGNORECASE,
+        )
+        for m_url in _TEXT_RESOURCE_URL_RE.finditer(repaired_txt):
+            u_str = m_url.group(0)
+            s_pos = max(0, m_url.start() - 160)
+            e_pos = min(len(repaired_txt), m_url.end() + 120)
+            ctx = _clean_spaces(repaired_txt[s_pos:e_pos])
+            candidates_on_page.append((u_str, ctx))
+
+        for raw_u, ctx in candidates_on_page:
+            classified = normalize_and_classify_resource_url(raw_u)
+            if classified is None:
+                continue
+            kind, label, canonical_url = classified
+            slug_compact = re.sub(r"[^a-z0-9]+", "", label.lower())
+            ctx_low = (ctx or "").lower()
+
+            has_title_match = any(tok in slug_compact for tok in title_tokens)
+            if label.lower() in _GENERIC_FRAMEWORK_REPOS and not has_title_match:
+                continue
+
+            score = 0
+            if p_idx == 0:
+                score += 4
+            elif p_idx == 1:
+                score += 1
+            if has_title_match:
+                score += 5
+            if any(cue in ctx_low for cue in _AUTHOR_OWNERSHIP_CUES):
+                score += 4
+            elif "available at" in ctx_low or "released at" in ctx_low or "open-source" in ctx_low:
+                score += 2
+            if kind == "huggingface" and p_idx <= 2:
+                score += 2
+
+            if any(neg in ctx_low for neg in _THIRD_PARTY_BASELINE_CUES) and "our " not in ctx_low:
+                score -= 5
+
+            if score < 2:
+                continue
+
+            key = canonical_url.lower()
+            prev = best_by_url.get(key)
+            if prev is None or score > prev[0]:
+                order_seq += 1
+                best_by_url[key] = (
+                    score,
+                    prev[1] if prev is not None else order_seq,
+                    PaperResourceLink(
+                        kind=kind,
+                        label=label,
+                        url=canonical_url,
+                        source="pdf",
+                    ),
+                )
+
+    kind_rank = {"code": 0, "huggingface": 1, "project": 2, "dataset": 3}
+    sorted_items = sorted(
+        best_by_url.values(),
+        key=lambda item: (kind_rank.get(item[2].kind, 9), -item[0], item[1]),
+    )
+    return arxiv_id, [item[2] for item in sorted_items[:6]]
+
+
+def extract_author_resource_links_from_pdf(
+    pdf_source: Union[bytes, Path, str],
+    title: str = "",
+    filename: str = "",
+) -> tuple[Optional[str], list[PaperResourceLink]]:
+    """Open `pdf_source` (bytes or file path) and extract `(arxiv_id, resource_links)`."""
+    if isinstance(pdf_source, (bytes, bytearray)):
+        doc = fitz.open(stream=bytes(pdf_source), filetype="pdf")
+    else:
+        p = Path(pdf_source)
+        if not p.exists():
+            return None, []
+        doc = fitz.open(str(p))
+    try:
+        return _extract_links_from_fitz_doc(doc, title=title, filename=filename)
+    finally:
+        doc.close()
+
+
 def extract_pdf_prebundle(
     pdf_bytes: bytes,
     filename: str,
@@ -1362,6 +1759,9 @@ def extract_pdf_prebundle(
 
         first_blocks = all_pages_blocks[0][1] if all_pages_blocks else []
         title = _detect_title(doc, first_blocks, filename)
+        detected_arxiv_id, detected_links = _extract_links_from_fitz_doc(
+            doc, title=title, filename=filename
+        )
 
         in_references = False
         ref_lines: list[tuple[float, str]] = []
@@ -1488,6 +1888,9 @@ def extract_pdf_prebundle(
             filename=filename,
             page_count=len(doc),
             format_version=3,
+            arxiv_id=detected_arxiv_id,
+            resource_links=detected_links,
+            resource_links_checked=False,
             sections=[],
             sentences=[],
             references=references,

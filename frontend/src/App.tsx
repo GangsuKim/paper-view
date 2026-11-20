@@ -22,6 +22,7 @@ import {
   Languages,
 } from 'lucide-react';
 import {
+  ensurePaperMediaInsights,
   fetchCitationMetadata,
   fetchModelsCatalog,
   fetchPaperBundle,
@@ -58,6 +59,7 @@ import type {
   ModelOptionItem,
   PaperDocument,
   PaperOverview,
+  PaperResourceLink,
   PaperSummaryItem,
   QueueStateResponse,
   SentenceItem,
@@ -273,6 +275,51 @@ export const App: React.FC = () => {
     [loadUsageStatus]
   );
 
+  const triggerEnsureMediaInsights = useCallback(
+    async (paperId: string, engine: string, targetLang?: LangCode, missingIds: string[] = []) => {
+      const useLang = targetLang || langRef.current;
+      if (missingIds.length > 0) {
+        setLoadingInsightIds((prev) => {
+          const next = new Set(prev);
+          for (const id of missingIds) next.add(id);
+          return next;
+        });
+      }
+      try {
+        const res = await ensurePaperMediaInsights(paperId, engine, false, useLang);
+        if (
+          res.insights &&
+          Object.keys(res.insights).length > 0 &&
+          paperRef.current?.paper_id === paperId &&
+          langRef.current === useLang
+        ) {
+          setPaper((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  sentences: prev.sentences.map((s) =>
+                    res.insights[s.id] ? { ...s, insight: res.insights[s.id] } : s
+                  ),
+                }
+              : prev
+          );
+          loadUsageStatus(true);
+        }
+      } catch {
+        // Non-fatal: fallback button remains available if offline
+      } finally {
+        if (missingIds.length > 0) {
+          setLoadingInsightIds((prev) => {
+            const next = new Set(prev);
+            for (const id of missingIds) next.delete(id);
+            return next;
+          });
+        }
+      }
+    },
+    [loadUsageStatus]
+  );
+
   const triggerPaperOverview = useCallback(
     async (paperId: string, engine: string, force = false, targetLang?: LangCode) => {
       const useLang = targetLang || langRef.current;
@@ -338,12 +385,33 @@ export const App: React.FC = () => {
         }
       });
 
+      es.addEventListener('resources', (ev) => {
+        try {
+          const data = JSON.parse((ev as MessageEvent).data) as {
+            arxiv_id?: string | null;
+            resource_links?: PaperResourceLink[];
+          };
+          setPaper((prev) =>
+            prev && prev.paper_id === paperId
+              ? {
+                  ...prev,
+                  arxiv_id: data.arxiv_id ?? prev.arxiv_id,
+                  resource_links: data.resource_links || prev.resource_links,
+                }
+              : prev
+          );
+        } catch {
+          // ignore
+        }
+      });
+
       es.addEventListener('overview', (ev) => {
         try {
           const data = JSON.parse((ev as MessageEvent).data) as {
             overview: PaperOverview;
             ai_progress?: number;
             ai_model?: string | null;
+            resource_links?: PaperResourceLink[];
           };
           setPaper((prev) =>
             prev && prev.paper_id === paperId
@@ -352,6 +420,7 @@ export const App: React.FC = () => {
                   overview: data.overview,
                   ai_progress: data.ai_progress ?? prev.ai_progress,
                   ai_model: data.ai_model || prev.ai_model,
+                  resource_links: data.resource_links || prev.resource_links,
                 }
               : prev
           );
@@ -534,11 +603,24 @@ export const App: React.FC = () => {
         bundle.paper.sentences.length === 0
       ) {
         startPaperStream(bundle.paper.paper_id, selectedEngineRef.current, false, useLang);
-      } else if (!bundle.paper.overview) {
-        triggerPaperOverview(bundle.paper.paper_id, selectedEngineRef.current, false, useLang);
+      } else {
+        if (!bundle.paper.overview) {
+          triggerPaperOverview(bundle.paper.paper_id, selectedEngineRef.current, false, useLang);
+        }
+        const missingMediaIds = bundle.paper.sentences
+          .filter((s) => (s.kind === 'figure' || s.kind === 'table') && !(s.insight && s.insight.trim()))
+          .map((s) => s.id);
+        if (missingMediaIds.length > 0) {
+          triggerEnsureMediaInsights(
+            bundle.paper.paper_id,
+            selectedEngineRef.current,
+            useLang,
+            missingMediaIds
+          );
+        }
       }
     },
-    [closeStream, startPaperStream, triggerPaperOverview]
+    [closeStream, startPaperStream, triggerPaperOverview, triggerEnsureMediaInsights]
   );
 
   const openPaperById = useCallback(
@@ -1933,6 +2015,7 @@ export const App: React.FC = () => {
           <div className="split-right" style={{ flex: 1 }}>
             <ReaderPane
               lang={lang}
+              resourceLinks={paper.resource_links || []}
               overview={paper.overview || null}
               loadingOverview={loadingOverview}
               onRefreshOverview={() =>

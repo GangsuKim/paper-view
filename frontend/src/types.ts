@@ -112,6 +112,13 @@ export interface PaperSummaryItem {
   created_at: string;
 }
 
+export interface PaperResourceLink {
+  kind: 'code' | 'huggingface' | 'dataset' | 'project' | string;
+  label: string;
+  url: string;
+  source?: string;
+}
+
 export interface PaperOverview {
   tldr: string;
   problem: string;
@@ -129,6 +136,9 @@ export interface PaperDocument {
   filename: string;
   page_count: number;
   lang?: string;
+  arxiv_id?: string | null;
+  resource_links?: PaperResourceLink[];
+  resource_links_checked?: boolean;
   overview?: PaperOverview | null;
   sections: string[];
   sentences: SentenceItem[];

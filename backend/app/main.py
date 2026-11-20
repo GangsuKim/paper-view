@@ -41,12 +41,14 @@ from .lang_profiles import list_supported_languages, normalize_lang_code
 from .citation_service import (
     collect_citing_sentences,
     download_pdf_from_url_or_arxiv,
+    enrich_author_resource_links,
     fetch_cited_paper_content,
     resolve_citation_metadata,
 )
 from .models import (
     AnalyzeBatchRequest,
     AnalyzeSentenceRequest,
+    BatchMediaInsightResponse,
     ChatMessage,
     ChatStreamRequest,
     CitationMetadataResponse,
@@ -321,6 +323,9 @@ async def upload_paper(
     pdf_bytes = await file.read()
     filename = file.filename or "uploaded_paper.pdf"
     doc = _ingest_pdf_bytes(pdf_bytes, filename, lang=code)
+    if not doc.resource_links_checked:
+        if await enrich_author_resource_links(doc):
+            update_paper_doc(doc, lang=code)
     return {
         "paper": doc,
         "analyses": load_sentence_analyses(doc.paper_id, lang=code),
@@ -338,6 +343,9 @@ async def open_local_pdf(req: OpenLocalRequest) -> dict:
         raise HTTPException(status_code=400, detail="PDF 파일(.pdf)만 열 수 있습니다.")
     pdf_bytes = path.read_bytes()
     doc = _ingest_pdf_bytes(pdf_bytes, path.name, lang=code)
+    if not doc.resource_links_checked:
+        if await enrich_author_resource_links(doc):
+            update_paper_doc(doc, lang=code)
     return {
         "paper": doc,
         "analyses": load_sentence_analyses(doc.paper_id, lang=code),
@@ -353,6 +361,9 @@ async def import_paper_from_url(req: ImportUrlRequest) -> dict:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"논문 다운로드 실패: {exc}") from exc
     doc = _ingest_pdf_bytes(pdf_bytes, filename, lang=code)
+    if not doc.resource_links_checked:
+        if await enrich_author_resource_links(doc, hint_url_or_arxiv=req.url_or_arxiv):
+            update_paper_doc(doc, lang=code)
     return {
         "paper": doc,
         "analyses": load_sentence_analyses(doc.paper_id, lang=code),
@@ -368,6 +379,9 @@ async def get_paper(paper_id: str, lang: Optional[str] = None) -> dict:
         raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
     if doc.format_version < 3:
         doc = stream_coordinator._ensure_prebundle_ready(paper_id, force_reset=False, lang=code)
+    if not doc.resource_links_checked:
+        if await enrich_author_resource_links(doc):
+            update_paper_doc(doc, lang=code)
     return {
         "paper": doc,
         "analyses": load_sentence_analyses(paper_id, lang=code),
@@ -542,6 +556,37 @@ async def create_or_refresh_media_insight(
     return MediaInsightResponse(
         sentence_id=sentence_id,
         insight=insight_txt,
+        engine=used_eng,
+        model_name=used_mod,
+    )
+
+
+@app.post(
+    "/api/papers/{paper_id}/media-insights/ensure",
+    response_model=BatchMediaInsightResponse,
+)
+async def ensure_paper_media_insights_endpoint(
+    paper_id: str,
+    req: GenerateOverviewRequest,
+) -> BatchMediaInsightResponse:
+    """Automatically backfill Author's Core Claim (`insight`) for all Figures and Tables in a paper."""
+    code = normalize_lang_code(req.lang or get_effective_default_lang())
+    doc = load_paper_doc(paper_id, lang=code)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="논문을 찾을 수 없습니다.")
+
+    try:
+        insights_map, used_eng, used_mod = await stream_coordinator.ensure_media_insights(
+            paper_id=paper_id,
+            engine=req.engine,
+            force=req.force,
+            lang=code,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return BatchMediaInsightResponse(
+        insights=insights_map,
         engine=used_eng,
         model_name=used_mod,
     )

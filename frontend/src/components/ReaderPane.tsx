@@ -15,14 +15,19 @@ import {
   ChevronDown,
   ChevronUp,
   Lightbulb,
+  ExternalLink,
+  Code2,
+  Globe,
+  Database,
 } from 'lucide-react';
-import { getApiBase } from '../api';
+import { getApiBase, openExternalUrl } from '../api';
 import { getUiStrings, type LangCode } from '../i18n';
-import type { InlineCitation, PaperOverview, SentenceItem } from '../types';
+import type { InlineCitation, PaperOverview, PaperResourceLink, SentenceItem } from '../types';
 import { getExplicitMathRanges, renderMathText } from '../utils/mathRenderer';
 
 interface ReaderPaneProps {
   lang?: LangCode;
+  resourceLinks?: PaperResourceLink[];
   overview: PaperOverview | null;
   loadingOverview: boolean;
   onRefreshOverview: () => void;
@@ -231,6 +236,7 @@ function renderOverviewRich(text: string, keyPrefix: string): React.ReactNode {
 
 export const ReaderPane: React.FC<ReaderPaneProps> = ({
   lang = 'ko',
+  resourceLinks = [],
   overview,
   loadingOverview,
   onRefreshOverview,
@@ -262,6 +268,13 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
   const [showKo, setShowKo] = useState(true);
   const [overviewCollapsed, setOverviewCollapsed] = useState(false);
   const [lightboxItem, setLightboxItem] = useState<SentenceItem | null>(null);
+  const liveLightboxItem = useMemo(
+    () =>
+      lightboxItem
+        ? sentences.find((s) => s.id === lightboxItem.id) || lightboxItem
+        : null,
+    [lightboxItem, sentences]
+  );
 
   const filteredSentences = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -448,6 +461,64 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
 
       {/* Main Reader Scroll Area */}
       <div className="reader-scroll-area" ref={scrollAreaRef}>
+        {/* Official Author-Provided Code / Hugging Face / Project Links */}
+        {!searchQuery.trim() && resourceLinks.length > 0 && (
+          <div className="author-resources-bar">
+            <span className="author-resources-kicker">{t.authorLinksLabel}</span>
+            <div className="author-resources-pills">
+              {resourceLinks.map((lk) => {
+                const isGithub = lk.url.toLowerCase().includes('github.com');
+                const badgeText =
+                  lk.kind === 'huggingface'
+                    ? t.hfLinkBadge
+                    : lk.kind === 'project'
+                    ? t.projectLinkBadge
+                    : lk.kind === 'dataset'
+                    ? t.datasetLinkBadge
+                    : t.codeLinkBadge;
+                const showSlug =
+                  lk.label &&
+                  lk.label.toLowerCase() !== badgeText.toLowerCase() &&
+                  lk.label.toLowerCase() !== 'code ocean';
+                return (
+                  <button
+                    key={lk.url}
+                    type="button"
+                    className={`author-resource-pill ${lk.kind}`}
+                    title={lk.url}
+                    onClick={() => openExternalUrl(lk.url)}
+                  >
+                    {lk.kind === 'huggingface' ? (
+                      <span className="hf-emoji" aria-hidden="true">
+                        🤗
+                      </span>
+                    ) : lk.kind === 'code' && isGithub ? (
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path d="M12 0.3C5.37 0.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58 0-.29-.01-1.05-.02-2.06-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.21.08 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.61-.01 2.9-.01 3.29 0 .32.21.7.82.58C20.57 22.1 24 17.6 24 12.3 24 5.67 18.63 0.3 12 0.3z" />
+                      </svg>
+                    ) : lk.kind === 'project' ? (
+                      <Globe size={13} />
+                    ) : lk.kind === 'dataset' ? (
+                      <Database size={13} />
+                    ) : (
+                      <Code2 size={13} />
+                    )}
+                    <strong className="res-pill-kind">{badgeText}</strong>
+                    {showSlug && <span className="res-pill-slug">{lk.label}</span>}
+                    <ExternalLink size={11} className="res-pill-ext" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Step 0: Top Paper Summary & Core Contributions Card */}
         {!searchQuery.trim() && (overview || loadingOverview || (isStreaming && !overview)) && (
           <section className="paper-overview-card" ref={overviewCardRef}>
@@ -676,7 +747,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                               {renderOverviewRich(sent.insight, `mi_${sent.id}`)}
                             </p>
                           </div>
-                        ) : loadingInsightIds?.has(sent.id) ? (
+                        ) : loadingInsightIds?.has(sent.id) || isStreaming ? (
                           <div className="media-insight-loading">
                             <div className="spinner-ring tiny" />
                             <span>{t.mediaInsightLoading}</span>
@@ -707,12 +778,12 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
         ))}
       </div>
 
-      {lightboxItem && lightboxItem.image_url && (
+      {liveLightboxItem && liveLightboxItem.image_url && (
         <div className="media-lightbox-backdrop" onClick={() => setLightboxItem(null)}>
           <div className="media-lightbox-modal" onClick={(e) => e.stopPropagation()}>
             <div className="media-lightbox-top">
               <strong>
-                {lightboxItem.media_label || 'Figure / Table'} (Page {lightboxItem.page})
+                {liveLightboxItem.media_label || 'Figure / Table'} (Page {liveLightboxItem.page})
               </strong>
               <button
                 type="button"
@@ -725,29 +796,29 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             </div>
             <div className="media-lightbox-img-wrap">
               <img
-                src={`${getApiBase()}${lightboxItem.image_url}`}
-                alt={lightboxItem.media_label || ''}
+                src={`${getApiBase()}${liveLightboxItem.image_url}`}
+                alt={liveLightboxItem.media_label || ''}
               />
             </div>
             <div className="media-lightbox-caption">
-              <p>{renderMathText(lightboxItem.text, 'lb_en')}</p>
-              {lightboxItem.ko && (
-                <p className="ko">→ {renderMathText(lightboxItem.ko, 'lb_ko')}</p>
+              <p>{renderMathText(liveLightboxItem.text, 'lb_en')}</p>
+              {liveLightboxItem.ko && (
+                <p className="ko">→ {renderMathText(liveLightboxItem.ko, 'lb_ko')}</p>
               )}
-              {lightboxItem.insight && (
+              {liveLightboxItem.insight && (
                 <div className="media-insight-box" style={{ marginTop: 10 }}>
                   <div className="media-insight-head">
                     <span className="media-insight-kicker">
                       <Lightbulb size={13} />
                       <span>
                         {t.mediaInsightLabel(
-                          lightboxItem.kind === 'table' ? 'table' : 'figure'
+                          liveLightboxItem.kind === 'table' ? 'table' : 'figure'
                         )}
                       </span>
                     </span>
                   </div>
                   <p className="media-insight-text">
-                    {renderOverviewRich(lightboxItem.insight, 'lb_mi')}
+                    {renderOverviewRich(liveLightboxItem.insight, 'lb_mi')}
                   </p>
                 </div>
               )}

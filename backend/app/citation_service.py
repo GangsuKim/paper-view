@@ -16,16 +16,21 @@ from .models import (
     CitationMetadataResponse,
     CitingSentenceSnippet,
     PaperDocument,
+    PaperResourceLink,
     ReferenceEntry,
 )
 from .pdf_parser import (
     ARXIV_RE,
+    _distinctive_title_tokens,
+    extract_author_resource_links_from_pdf,
     extract_key_text_from_cited_pdf,
     extract_main_figure_from_cited_pdf,
+    normalize_and_classify_resource_url,
 )
 from .storage import (
     DOWNLOAD_CACHE_DIR,
     ensure_dirs,
+    get_pdf_path,
     load_citation_summaries,
     update_paper_doc,
 )
@@ -840,3 +845,177 @@ async def download_pdf_from_url_or_arxiv(url_or_arxiv: str) -> tuple[bytes, str]
         if resp.content[:4] != b"%PDF":
             raise ValueError("해당 URL에서 유효한 PDF 파일을 가져오지 못했습니다.")
         return resp.content, filename
+
+
+def merge_resource_links(
+    existing: list[PaperResourceLink],
+    incoming: list[PaperResourceLink],
+) -> tuple[list[PaperResourceLink], bool]:
+    """Deduplicate and sort official resource links (`code` -> `huggingface` -> `project` -> `dataset`)."""
+    by_url: dict[str, PaperResourceLink] = {}
+    changed = False
+    for lk in existing:
+        by_url[lk.url.rstrip("/").lower()] = lk
+    for lk in incoming:
+        key = lk.url.rstrip("/").lower()
+        if key and key not in by_url:
+            by_url[key] = lk
+            changed = True
+
+    kind_rank = {"code": 0, "huggingface": 1, "project": 2, "dataset": 3}
+    merged = sorted(
+        by_url.values(),
+        key=lambda x: (kind_rank.get(x.kind, 9), 0 if x.source == "pdf" else 1),
+    )
+    return merged[:6], changed
+
+
+async def enrich_author_resource_links(
+    doc: PaperDocument,
+    hint_url_or_arxiv: Optional[str] = None,
+) -> bool:
+    """
+    Backfill PDF-embedded Code / Hugging Face links (for legacy cached papers) and enrich via
+    Hugging Face Papers metadata when an arXiv ID is available. Non-fatal when offline.
+    """
+    changed = False
+    found_links: list[PaperResourceLink] = []
+
+    # 1. Backfill from local source.pdf if not yet scanned
+    if not doc.resource_links_checked and not doc.resource_links:
+        pdf_path = get_pdf_path(doc.paper_id)
+        if pdf_path is not None and pdf_path.exists():
+            try:
+                det_aid, pdf_links = extract_author_resource_links_from_pdf(
+                    pdf_path, title=doc.title, filename=doc.filename
+                )
+                if det_aid and not doc.arxiv_id:
+                    doc.arxiv_id = det_aid
+                    changed = True
+                found_links.extend(pdf_links)
+            except Exception:
+                pass
+
+    # 2. Check hint string for explicit arXiv ID
+    if hint_url_or_arxiv and not doc.arxiv_id:
+        m_id = re.fullmatch(r"(?:arXiv:)?(\d{4}\.\d{4,5})(?:v\d+)?", hint_url_or_arxiv.strip(), re.IGNORECASE)
+        if m_id:
+            doc.arxiv_id = m_id.group(1)
+            changed = True
+        else:
+            m_arx = ARXIV_RE.search(hint_url_or_arxiv)
+            if m_arx:
+                doc.arxiv_id = re.sub(r"v\d+$", "", m_arx.group(1), flags=re.IGNORECASE)
+                changed = True
+
+    # 3. Query Hugging Face Papers public metadata when arXiv ID is present
+    clean_aid = re.sub(r"v\d+$", "", (doc.arxiv_id or "").strip(), flags=re.IGNORECASE)
+    if clean_aid:
+        try:
+            async with httpx.AsyncClient(
+                headers={"User-Agent": USER_AGENT},
+                follow_redirects=True,
+                timeout=3.5,
+            ) as client:
+                resp = await client.get(f"https://huggingface.co/api/papers/{quote(clean_aid)}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    gh_repo = str(data.get("githubRepo") or "").strip()
+                    gh_tokens: set[str] = set()
+                    if gh_repo:
+                        cls = normalize_and_classify_resource_url(gh_repo)
+                        if cls is not None:
+                            kind, label, canon = cls
+                            found_links.append(
+                                PaperResourceLink(kind=kind, label=label, url=canon, source="hf_papers")
+                            )
+                            for part in label.lower().split("/"):
+                                clean_p = re.sub(r"[^a-z0-9]+", "", part)
+                                if len(clean_p) >= 3:
+                                    gh_tokens.add(clean_p)
+
+                    proj_page = str(data.get("projectPage") or "").strip()
+                    if proj_page.startswith(("http://", "https://")):
+                        cls_p = normalize_and_classify_resource_url(proj_page)
+                        if cls_p is not None:
+                            found_links.append(
+                                PaperResourceLink(
+                                    kind=cls_p[0], label=cls_p[1], url=cls_p[2], source="hf_papers"
+                                )
+                            )
+                        else:
+                            from urllib.parse import urlsplit
+                            sp = urlsplit(proj_page)
+                            if sp.netloc and "arxiv.org" not in sp.netloc.lower():
+                                found_links.append(
+                                    PaperResourceLink(
+                                        kind="project",
+                                        label=sp.netloc.replace("www.", "")[:36],
+                                        url=proj_page,
+                                        source="hf_papers",
+                                    )
+                                )
+
+                    # Strictly verify author ownership for linked HF Models / Datasets / Spaces
+                    author_handles: set[str] = set()
+                    for au in data.get("authors") or []:
+                        if isinstance(au, dict):
+                            u_info = au.get("user") or {}
+                            uname = re.sub(r"[^a-z0-9]+", "", str(u_info.get("user") or "").lower())
+                            if len(uname) >= 3:
+                                author_handles.add(uname)
+                            fname = str(au.get("name") or "").strip().split()
+                            if fname:
+                                surname = re.sub(r"[^a-z0-9]+", "", fname[-1].lower())
+                                if len(surname) >= 4:
+                                    author_handles.add(surname)
+
+                    title_tokens = {t for t in _distinctive_title_tokens(doc.title) if len(t) >= 4}
+                    trusted_tokens = gh_tokens | title_tokens
+
+                    def _is_author_hf_repo(repo_id: str, repo_author: str) -> bool:
+                        ra = re.sub(r"[^a-z0-9]+", "", (repo_author or "").lower())
+                        if ra and (ra in author_handles or ra in gh_tokens):
+                            return True
+                        slug_only = repo_id.split("/", 1)[-1] if "/" in repo_id else repo_id
+                        rc = re.sub(r"[^a-z0-9]+", "", slug_only.lower())
+                        if rc and any(tok == rc or (len(tok) >= 5 and tok in rc and ra in author_handles) for tok in trusted_tokens):
+                            return True
+                        return False
+
+                    hf_added = 0
+                    for bucket, prefix in (
+                        ("linkedModels", ""),
+                        ("linkedDatasets", "datasets/"),
+                        ("linkedSpaces", "spaces/"),
+                    ):
+                        for item in (data.get(bucket) or [])[:8]:
+                            if hf_added >= 2 or not isinstance(item, dict):
+                                break
+                            rid = str(item.get("id") or "").strip()
+                            rauthor = str(item.get("author") or "").strip()
+                            if rid and _is_author_hf_repo(rid, rauthor):
+                                full_slug = f"{prefix}{rid}"
+                                found_links.append(
+                                    PaperResourceLink(
+                                        kind="huggingface",
+                                        label=full_slug,
+                                        url=f"https://huggingface.co/{full_slug}",
+                                        source="hf_papers",
+                                    )
+                                )
+                                hf_added += 1
+        except Exception:
+            pass
+
+    if found_links:
+        merged, link_added = merge_resource_links(doc.resource_links, found_links)
+        if link_added:
+            doc.resource_links = merged
+            changed = True
+
+    if not doc.resource_links_checked:
+        doc.resource_links_checked = True
+        changed = True
+
+    return changed

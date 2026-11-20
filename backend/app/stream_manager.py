@@ -5,16 +5,20 @@ import json
 from typing import Any, AsyncIterator, Optional
 
 from .ai_service import (
+    generate_batch_media_insights,
     generate_paper_overview,
     get_effective_default_lang,
     stream_chunk_section_and_translate,
 )
+from .citation_service import enrich_author_resource_links
 from .lang_profiles import get_lang_profile, normalize_lang_code
 from .models import PaperDocument
 from .pdf_parser import (
     _build_author_year_index,
     build_ai_sentence_item,
     extract_pdf_prebundle,
+    extract_pdf_regions_batch,
+    find_media_citing_sentences,
 )
 from .storage import (
     get_pdf_path,
@@ -66,9 +70,104 @@ class PaperStreamCoordinator:
     def __init__(self) -> None:
         self._jobs: dict[str, PaperStreamJob] = {}
         self._lock = asyncio.Lock()
+        self._insight_locks: dict[str, asyncio.Lock] = {}
 
     def _resolve_lang(self, lang: Optional[str]) -> str:
         return normalize_lang_code(lang or get_effective_default_lang())
+
+    def _get_insight_lock(self, paper_id: str, lang: str) -> asyncio.Lock:
+        key = f"{paper_id}:{lang}"
+        lk = self._insight_locks.get(key)
+        if lk is None:
+            lk = asyncio.Lock()
+            self._insight_locks[key] = lk
+        return lk
+
+    async def ensure_media_insights(
+        self,
+        paper_id: str,
+        engine: str = "auto",
+        force: bool = False,
+        lang: Optional[str] = None,
+        job: Optional[PaperStreamJob] = None,
+    ) -> tuple[dict[str, str], Optional[str], Optional[str]]:
+        """Ensure all Figure and Table items in `paper_id` have Author's Core Claim (`insight`) populated."""
+        code = self._resolve_lang(lang)
+        lock = self._get_insight_lock(paper_id, code)
+        async with lock:
+            doc = load_paper_doc(paper_id, lang=code)
+            if doc is None:
+                return {}, None, None
+
+            targets = [
+                s
+                for s in doc.sentences
+                if s.kind in ("figure", "table") and (force or not (s.insight and s.insight.strip()))
+            ]
+            if not targets:
+                return {}, doc.ai_engine, doc.ai_model
+
+            raw_chunks = load_raw_chunks(paper_id)
+            prose_sources = (
+                [c.text for c in raw_chunks]
+                if raw_chunks
+                else [s.text for s in doc.sentences if s.kind == "sentence"]
+            )
+            pdf_path = get_pdf_path(paper_id)
+            region_queries = [
+                (s.id, s.page, s.bboxes[0] if s.bboxes else None)
+                for s in targets
+            ]
+            inner_map = extract_pdf_regions_batch(pdf_path, region_queries)
+
+            batch_items: list[dict[str, Any]] = []
+            for s in targets:
+                m_label = s.media_label or ("Table" if s.kind == "table" else "Figure")
+                citing = find_media_citing_sentences(
+                    label=m_label,
+                    kind=s.kind or "figure",
+                    prose_texts=prose_sources,
+                    max_hits=4,
+                )
+                batch_items.append(
+                    {
+                        "sentence_id": s.id,
+                        "kind": s.kind or "figure",
+                        "label": m_label,
+                        "caption_en": s.text,
+                        "citing_body_sentences": citing,
+                        "internal_labels_text": inner_map.get(s.id, ""),
+                    }
+                )
+
+            insights_map, used_eng, used_mod = await generate_batch_media_insights(
+                paper_title=doc.title,
+                items=batch_items,
+                paper_tldr=(doc.overview.tldr if doc.overview else ""),
+                engine=engine,
+                lang=code,
+            )
+
+            if insights_map:
+                latest_doc = load_paper_doc(paper_id, lang=code) or doc
+                for s in latest_doc.sentences:
+                    if s.id in insights_map:
+                        s.insight = insights_map[s.id]
+                        if job is not None:
+                            job.broadcast(
+                                "sentence",
+                                {
+                                    "sentence": s.model_dump(),
+                                    "sections": latest_doc.sections,
+                                    "ai_progress": latest_doc.ai_progress,
+                                    "ai_engine": used_eng,
+                                    "ai_model": used_mod or latest_doc.ai_model,
+                                    "current_section": s.section,
+                                },
+                            )
+                update_paper_doc(latest_doc, lang=code)
+
+            return insights_map, used_eng, used_mod or doc.ai_model
 
     def _ensure_prebundle_ready(
         self,
@@ -157,6 +256,9 @@ class PaperStreamCoordinator:
             else:
                 doc = self._ensure_prebundle_ready(paper_id, force_reset=force, lang=code)
                 if doc.ai_status == "completed" and not force and doc.sentences:
+                    if not doc.resource_links_checked:
+                        if await enrich_author_resource_links(doc):
+                            update_paper_doc(doc, lang=code)
                     if doc.overview is None:
                         raw_chunks = load_raw_chunks(paper_id)
                         try:
@@ -167,7 +269,13 @@ class PaperStreamCoordinator:
                             update_paper_doc(doc, lang=code)
                         except Exception:
                             pass
-                    return doc
+                    try:
+                        await self.ensure_media_insights(
+                            paper_id=paper_id, engine=engine, force=False, lang=code
+                        )
+                    except Exception:
+                        pass
+                    return load_paper_doc(paper_id, lang=code) or doc
 
                 job = PaperStreamJob(paper_id=paper_id, engine=engine, lang=code)
                 job.task = asyncio.create_task(self._run_job(job))
@@ -251,7 +359,17 @@ class PaperStreamCoordinator:
             doc.ai_status = "streaming"
             doc.ai_error = None
             doc.ai_total_chunks = len(raw_chunks)
+            if not doc.resource_links_checked:
+                await enrich_author_resource_links(doc)
             update_paper_doc(doc, lang=code)
+            if doc.resource_links or doc.arxiv_id:
+                job.broadcast(
+                    "resources",
+                    {
+                        "arxiv_id": doc.arxiv_id,
+                        "resource_links": [lk.model_dump() for lk in doc.resource_links],
+                    },
+                )
 
             prev_section = doc.sections[-1] if doc.sections else ""
             start_chunk = max(0, min(doc.ai_completed_chunks, len(raw_chunks)))
@@ -292,6 +410,7 @@ class PaperStreamCoordinator:
                             "overview": overview.model_dump(),
                             "ai_progress": doc.ai_progress,
                             "ai_model": doc.ai_model,
+                            "resource_links": [lk.model_dump() for lk in doc.resource_links],
                         },
                     )
                 except asyncio.CancelledError:
@@ -449,6 +568,22 @@ class PaperStreamCoordinator:
                         "current_section": prev_section,
                     },
                 )
+
+            # Ensure any Figure/Table that missed inline `insight` during streaming gets filled before completion
+            if any(s.kind in ("figure", "table") and not (s.insight and s.insight.strip()) for s in doc.sentences):
+                try:
+                    await self.ensure_media_insights(
+                        paper_id=paper_id,
+                        engine=job.engine,
+                        force=False,
+                        lang=code,
+                        job=job,
+                    )
+                    doc = load_paper_doc(paper_id, lang=code) or doc
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
 
             doc.ai_status = "completed"
             doc.ai_progress = 100

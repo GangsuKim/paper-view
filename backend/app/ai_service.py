@@ -1544,7 +1544,7 @@ Avoid filler phrases and focus strictly on technical substance. If mathematical 
 [Paper Excerpts]:
 {paper_excerpt}
 
-Respond ONLY in the following valid JSON format (no extra text outside JSON; `clean_title` stays in original English, and ALL other fields MUST be written in **{target_desc}**):
+Respond ONLY in the following valid JSON format (no extra text outside JSON; `clean_title`, `code_url`, `huggingface_url` stay in ASCII/English, and ALL other fields MUST be written in **{target_desc}**):
 {{
   "clean_title": "Cleaned exact English paper title",
   "tldr": "1–2 sentence core summary in {target_desc} of what this paper proposes and why it matters",
@@ -1555,7 +1555,9 @@ Respond ONLY in the following valid JSON format (no extra text outside JSON; `cl
     "**Key Contribution 2 (in {target_desc})**: Description (1–2 sentences in {target_desc})",
     "**Key Contribution 3 (in {target_desc})**: Description (1–2 sentences in {target_desc})"
   ],
-  "results": "Key quantitative/qualitative experimental results achieved (1 sentence in {target_desc})"
+  "results": "Key quantitative/qualitative experimental results achieved (1 sentence in {target_desc})",
+  "code_url": "Exact official GitHub/GitLab repository URL explicitly stated by THIS paper's authors, or empty string \"\"",
+  "huggingface_url": "Exact official Hugging Face (huggingface.co / hf.co) URL explicitly stated by THIS paper's authors, or empty string \"\""
 }}"""
 
     raw, used_engine = await run_local_llm(
@@ -1571,6 +1573,24 @@ Respond ONLY in the following valid JSON format (no extra text outside JSON; `cl
 
     used_model, _ = resolve_display_model_for_engine(used_engine)
     clean_title = str(data.get("clean_title") or "").strip() or None
+
+    # Merge any explicit author-provided Code / Hugging Face URLs surfaced from paper text
+    from .pdf_parser import normalize_and_classify_resource_url
+    from .models import PaperResourceLink
+
+    existing_urls = {lk.url.rstrip("/").lower() for lk in (doc.resource_links or [])}
+    for raw_cand in (data.get("code_url"), data.get("huggingface_url")):
+        cand_str = str(raw_cand or "").strip()
+        if not cand_str:
+            continue
+        cls = normalize_and_classify_resource_url(cand_str)
+        if cls is not None:
+            k_type, k_lbl, k_url = cls
+            if k_url.rstrip("/").lower() not in existing_urls:
+                doc.resource_links.append(
+                    PaperResourceLink(kind=k_type, label=k_lbl, url=k_url, source="ai")
+                )
+                existing_urls.add(k_url.rstrip("/").lower())
 
     overview = PaperOverview(
         tldr=str(data.get("tldr") or "").strip(),
@@ -1634,6 +1654,85 @@ Respond ONLY in valid JSON (no extra text):
         raise ValueError("Empty insight returned by AI.")
     used_model, _ = resolve_display_model_for_engine(used_engine)
     return insight_txt, used_engine, used_model
+
+
+async def generate_batch_media_insights(
+    paper_title: str,
+    items: list[dict[str, Any]],
+    paper_tldr: str = "",
+    engine: str = "auto",
+    lang: Optional[str] = None,
+) -> tuple[dict[str, str], str, str]:
+    """
+    Generate crisp Author's Core Claim explanations (`insight`) for multiple Figures/Tables in batch
+    (up to 8 per LLM call) so all Figures & Tables display their core takeaway by default.
+    """
+    if not items:
+        return {}, engine, ""
+    prof = get_lang_profile(lang or get_effective_default_lang())
+    target_desc = f"{prof.english_name} ({prof.native_name})"
+
+    out_map: dict[str, str] = {}
+    used_engine = engine
+    used_model = ""
+
+    batch_size = 8
+    for start in range(0, len(items), batch_size):
+        slice_items = items[start : start + batch_size]
+        payload = [
+            {
+                "sentence_id": it["sentence_id"],
+                "kind": it.get("kind", "figure"),
+                "label": it.get("label", "Figure"),
+                "caption": it.get("caption_en", "")[:600],
+                "internal_labels": it.get("internal_labels_text", "")[:420],
+                "body_mentions": (it.get("citing_body_sentences") or [])[:4],
+            }
+            for it in slice_items
+        ]
+
+        prompt = f"""For each Figure or Table listed below from this academic paper, explain clearly in **{target_desc}** **what the authors want to argue, demonstrate, or highlight** through that Figure/Table.
+Do NOT merely translate or repeat the caption — synthesize `body_mentions`, `internal_labels`, and `caption` to explain **why the authors included it and what key conclusion/comparison the reader should take away**.
+
+Style rules:
+- {prof.media_insight_style_guide}
+- Keep inline math in `$...$` (double-escape backslashes `\\\\` inside JSON strings).
+
+[Paper Title]: {paper_title}
+[Paper Core Thesis]: {paper_tldr or '(N/A)'}
+[Figures & Tables to Analyze]:
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+
+Respond ONLY with a valid JSON array (no extra text outside JSON):
+[
+  {{
+    "sentence_id": "exact sentence_id from input",
+    "insight": "1–2 sentence explanation in {target_desc} of what the authors want to argue/demonstrate"
+  }}
+]"""
+
+        raw_out, used_engine = await run_local_llm(
+            prompt, engine=engine, system_prompt=build_system_prompt(prof.code)
+        )
+        arr = _extract_json_obj(raw_out)
+        if isinstance(arr, dict) and "items" in arr:
+            arr = arr["items"]
+        if isinstance(arr, dict):
+            # Resilient fallback if LLM returned {"s_0010": "..."} mapping
+            for k, v in arr.items():
+                if isinstance(v, str) and v.strip():
+                    out_map[str(k)] = v.strip()
+        elif isinstance(arr, list):
+            for entry in arr:
+                if isinstance(entry, dict):
+                    sid = str(entry.get("sentence_id") or "").strip()
+                    ins = str(entry.get("insight") or "").strip()
+                    if sid and ins:
+                        out_map[sid] = ins
+
+        used_model, _ = resolve_display_model_for_engine(used_engine)
+
+    return out_map, used_engine, used_model
 
 
 async def stream_chunk_section_and_translate(

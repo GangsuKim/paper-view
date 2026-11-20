@@ -156,6 +156,14 @@ class PaperSummaryItem(BaseModel):
     created_at: str
 
 
+class PaperResourceLink(BaseModel):
+    """Author-provided official resource link (GitHub/Code, Hugging Face, Dataset, Project Page)."""
+    kind: str  # "code" | "huggingface" | "dataset" | "project"
+    label: str
+    url: str
+    source: str = "pdf"  # "pdf" | "hf_papers" | "ai"
+
+
 class PaperOverview(BaseModel):
     """High-level paper summary & core contributions displayed first at the top of ReaderPane."""
     tldr: str
@@ -175,6 +183,9 @@ class PaperDocument(BaseModel):
     page_count: int
     format_version: int = 1
     lang: str = "ko"
+    arxiv_id: Optional[str] = None
+    resource_links: list[PaperResourceLink] = Field(default_factory=list)
+    resource_links_checked: bool = False
     overview: Optional[PaperOverview] = None
     sections: list[str] = Field(default_factory=list)
     sentences: list[SentenceItem] = Field(default_factory=list)
@@ -226,6 +237,12 @@ class GenerateOverviewRequest(BaseModel):
 class MediaInsightResponse(BaseModel):
     sentence_id: str
     insight: str
+    engine: Optional[str] = None
+    model_name: Optional[str] = None
+
+
+class BatchMediaInsightResponse(BaseModel):
+    insights: dict[str, str] = Field(default_factory=dict)
     engine: Optional[str] = None
     model_name: Optional[str] = None
 

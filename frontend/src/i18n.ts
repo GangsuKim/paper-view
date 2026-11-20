@@ -128,6 +128,11 @@ export interface UiStrings {
   mediaInsightLabel: (kind: 'figure' | 'table') => string;
   mediaInsightBtn: (kind: 'figure' | 'table') => string;
   mediaInsightLoading: string;
+  authorLinksLabel: string;
+  codeLinkBadge: string;
+  hfLinkBadge: string;
+  projectLinkBadge: string;
+  datasetLinkBadge: string;
   // CitationPopover
   citHeader: string;
   citLoadingMeta: string;
@@ -282,6 +287,11 @@ const KO: UiStrings = {
       ? '저자가 이 표로 말하고 싶은 핵심 보기'
       : '저자가 이 그림으로 말하고 싶은 핵심 보기',
   mediaInsightLoading: '본문 언급 문장과 내부 수치를 바탕으로 저자의 핵심 의도를 정리하는 중...',
+  authorLinksLabel: '저자 공식 리소스',
+  codeLinkBadge: 'Code',
+  hfLinkBadge: 'Hugging Face',
+  projectLinkBadge: 'Project',
+  datasetLinkBadge: 'Dataset',
   citHeader: '인용 논문 정보',
   citLoadingMeta: '서지 정보(제목·저자·출판연도)를 조회하는 중입니다...',
   etAl: (n) => ` 외 ${n}명`,
@@ -436,6 +446,11 @@ const EN: UiStrings = {
   mediaInsightBtn: (k) =>
     k === 'table' ? "Explain Author's Key Claim (Table)" : "Explain Author's Key Claim (Figure)",
   mediaInsightLoading: "Analyzing body context & values to summarize the authors' core claim...",
+  authorLinksLabel: 'Official Resources',
+  codeLinkBadge: 'Code',
+  hfLinkBadge: 'Hugging Face',
+  projectLinkBadge: 'Project',
+  datasetLinkBadge: 'Dataset',
   citHeader: 'Cited Paper Info',
   citLoadingMeta: 'Resolving bibliography metadata & arXiv full text...',
   etAl: (n) => ` +${n} more`,
@@ -591,6 +606,11 @@ const JA: UiStrings = {
   mediaInsightBtn: (k) =>
     k === 'table' ? '著者がこの表で主張したい核心を見る' : '著者がこの図で主張したい核心を見る',
   mediaInsightLoading: '本文の言及箇所と図内数値から著者の主張を整理しています...',
+  authorLinksLabel: '著者公式リンク',
+  codeLinkBadge: 'Code',
+  hfLinkBadge: 'Hugging Face',
+  projectLinkBadge: 'Project',
+  datasetLinkBadge: 'Dataset',
   citHeader: '引用論文の情報',
   citLoadingMeta: '書誌情報と arXiv 原文PDFを確認しています...',
   etAl: (n) => ` ほか${n}名`,
@@ -746,6 +766,11 @@ const ZH_CN: UiStrings = {
   mediaInsightBtn: (k) =>
     k === 'table' ? '查看作者在此表中的核心主张' : '查看作者在此图中的核心主张',
   mediaInsightLoading: '正在结合正文论述与图内数据提炼作者的核心主张...',
+  authorLinksLabel: '作者官方资源',
+  codeLinkBadge: 'Code',
+  hfLinkBadge: 'Hugging Face',
+  projectLinkBadge: 'Project',
+  datasetLinkBadge: 'Dataset',
   citHeader: '引用论文信息',
   citLoadingMeta: '正在检索题录信息与 arXiv 原文 PDF...',
   etAl: (n) => ` 等 ${n} 人`,
@@ -897,6 +922,11 @@ const ZH_TW: UiStrings = {
   mediaInsightBtn: (k) =>
     k === 'table' ? '查看作者在此表中的核心主張' : '查看作者在此圖中的核心主張',
   mediaInsightLoading: '正在結合內文論述與圖內數據整理作者的核心主張...',
+  authorLinksLabel: '作者官方資源',
+  codeLinkBadge: 'Code',
+  hfLinkBadge: 'Hugging Face',
+  projectLinkBadge: 'Project',
+  datasetLinkBadge: 'Dataset',
   citHeader: '引用論文資訊',
   citLoadingMeta: '正在檢索書目資訊與 arXiv 原文 PDF...',
   fulltextReady: '可取得原文 PDF',
@@ -1000,6 +1030,7 @@ const ES: UiStrings = {
   mediaInsightLabel: (k) =>
     k === 'table' ? 'Idea clave de los autores en esta tabla' : 'Idea clave de los autores en esta figura',
   mediaInsightBtn: () => 'Ver qué quieren demostrar los autores',
+  authorLinksLabel: 'Recursos oficiales',
   citHeader: 'Información de la Cita',
   quickSummaryBtn: 'Ver Resumen Rápido',
   closeKeepReading: 'Cerrar y seguir leyendo',
@@ -1055,6 +1086,7 @@ const DE: UiStrings = {
   mediaInsightLabel: (k) =>
     k === 'table' ? 'Kernaussage der Autoren zu dieser Tabelle' : 'Kernaussage der Autoren zu dieser Abbildung',
   mediaInsightBtn: () => 'Kernaussage der Autoren anzeigen',
+  authorLinksLabel: 'Offizielle Links',
   citHeader: 'Zitierte Arbeit',
   quickSummaryBtn: 'Kurzzusammenfassung',
   closeKeepReading: 'Schließen & weiterlesen',
@@ -1110,6 +1142,7 @@ const FR: UiStrings = {
   mediaInsightLabel: (k) =>
     k === 'table' ? 'Argument clé des auteurs (Tableau)' : 'Argument clé des auteurs (Figure)',
   mediaInsightBtn: () => "Voir l'argument clé des auteurs",
+  authorLinksLabel: 'Ressources officielles',
   citHeader: 'Article Cité',
   quickSummaryBtn: 'Résumé Rapide',
   closeKeepReading: 'Fermer et continuer la lecture',

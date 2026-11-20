@@ -181,6 +181,25 @@ export async function generateMediaInsight(
   );
 }
 
+export async function ensurePaperMediaInsights(
+  paperId: string,
+  engine: string,
+  force = false,
+  lang?: string
+): Promise<{ insights: Record<string, string>; engine?: string; model_name?: string }> {
+  const res = await fetch(
+    `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/media-insights/ensure`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine, force, lang }),
+    }
+  );
+  return handleJson<{ insights: Record<string, string>; engine?: string; model_name?: string }>(
+    res
+  );
+}
+
 export async function analyzeSentence(
   paperId: string,
   sentenceId: string,

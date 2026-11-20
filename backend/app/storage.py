@@ -162,6 +162,15 @@ def update_paper_doc(doc: PaperDocument, lang: Optional[str] = None) -> None:
                 if doc.title and not doc.title.endswith(".pdf") and base_doc.title.endswith(".pdf"):
                     base_doc.title = doc.title
                     changed = True
+                if doc.arxiv_id and not base_doc.arxiv_id:
+                    base_doc.arxiv_id = doc.arxiv_id
+                    changed = True
+                if doc.resource_links and len(doc.resource_links) > len(base_doc.resource_links):
+                    base_doc.resource_links = doc.resource_links
+                    changed = True
+                if doc.resource_links_checked and not base_doc.resource_links_checked:
+                    base_doc.resource_links_checked = True
+                    changed = True
                 for rk, ref in doc.references.items():
                     if ref.enriched and (rk not in base_doc.references or not base_doc.references[rk].enriched):
                         base_doc.references[rk] = ref
@@ -190,6 +199,12 @@ def load_paper_doc(paper_id: str, lang: Optional[str] = None) -> Optional[PaperD
         if code != "ko" and base_path.exists():
             try:
                 base_doc = PaperDocument.model_validate_json(base_path.read_text(encoding="utf-8"))
+                if base_doc.arxiv_id and not doc.arxiv_id:
+                    doc.arxiv_id = base_doc.arxiv_id
+                if base_doc.resource_links and not doc.resource_links:
+                    doc.resource_links = base_doc.resource_links
+                if base_doc.resource_links_checked and not doc.resource_links_checked:
+                    doc.resource_links_checked = True
                 for rk, bref in base_doc.references.items():
                     if bref.enriched and (rk not in doc.references or not doc.references[rk].enriched):
                         doc.references[rk] = bref
@@ -207,6 +222,9 @@ def load_paper_doc(paper_id: str, lang: Optional[str] = None) -> Optional[PaperD
             page_count=base_doc.page_count,
             format_version=base_doc.format_version,
             lang=code,
+            arxiv_id=base_doc.arxiv_id,
+            resource_links=base_doc.resource_links,
+            resource_links_checked=base_doc.resource_links_checked,
             overview=None,
             sections=[],
             sentences=[],
