@@ -139,4 +139,5 @@ fi
 cd "$ROOT_DIR/backend"
 export PYTHONIOENCODING="utf-8"
 export PAPERVIEW_PORT="$PORT"
+export PAPERVIEW_HOST="$BIND_HOST"
 exec "$VENV_PY" -m uvicorn app.main:app --host "$BIND_HOST" --port "$PORT"

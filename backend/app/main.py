@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 import datetime as dt
 import json
 import mimetypes
+import os
+from urllib.parse import urlsplit
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
@@ -14,8 +16,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 mimetypes.add_type("text/javascript", ".mjs")
 mimetypes.add_type("text/javascript", ".js")
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.datastructures import Headers
 
 from .ai_service import (
     analyze_batch_sentences,
@@ -105,14 +109,110 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
-# Allow local browser, Vite dev server, and VS Code Webview origins
+# --- Local Security Policy (CORS + DNS Rebinding + Cross-Origin POST/DELETE Guard) ---
+_PORT = os.environ.get("PAPERVIEW_PORT", "8787").strip() or "8787"
+_BIND_HOST = os.environ.get("PAPERVIEW_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+_ALLOWED_HOSTS: list[str] = ["127.0.0.1", "localhost", "[::1]"]
+if _BIND_HOST in ("0.0.0.0", "::"):
+    _ALLOWED_HOSTS = ["*"]
+elif _BIND_HOST.lower() not in _ALLOWED_HOSTS:
+    _ALLOWED_HOSTS.append(_BIND_HOST.lower())
+
+for _extra_h in os.environ.get("PAPERVIEW_ALLOWED_HOSTS", "").split(","):
+    _h_clean = _extra_h.strip().lower()
+    if _h_clean and _h_clean not in _ALLOWED_HOSTS:
+        _ALLOWED_HOSTS.append(_h_clean)
+
+_ALLOWED_ORIGINS: list[str] = [
+    f"http://127.0.0.1:{_PORT}",
+    f"http://localhost:{_PORT}",
+    f"http://[::1]:{_PORT}",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+]
+if _BIND_HOST not in ("127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0", "::"):
+    _ALLOWED_ORIGINS.append(f"http://{_BIND_HOST}:{_PORT}")
+
+for _extra_o in os.environ.get("PAPERVIEW_ALLOWED_ORIGINS", "").split(","):
+    _o_clean = _extra_o.strip().rstrip("/")
+    if _o_clean and _o_clean not in _ALLOWED_ORIGINS:
+        _ALLOWED_ORIGINS.append(_o_clean)
+
+
+class LocalOriginCSRFMiddleware:
+    """Block cross-origin state-changing requests (including simple/multipart POSTs without preflight)."""
+
+    _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def __init__(self, app, allowed_origins: Sequence[str]) -> None:
+        self.app = app
+        self.allowed_origins = {o.lower().rstrip("/") for o in allowed_origins}
+
+    def _is_trusted_origin(self, candidate: str, host_header: str) -> bool:
+        norm = candidate.strip().lower().rstrip("/")
+        if not norm or norm == "null":
+            return False
+        if norm in self.allowed_origins:
+            return True
+        if host_header:
+            clean_host = host_header.strip().lower()
+            if norm in (f"http://{clean_host}", f"https://{clean_host}"):
+                return True
+        return False
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("method", "").upper() not in self._UNSAFE_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        host_header = headers.get("host", "")
+        origin = headers.get("origin")
+
+        if origin is not None:
+            if not self._is_trusted_origin(origin, host_header):
+                resp = JSONResponse(
+                    {"detail": "Cross-origin request blocked by PaperView local security policy."},
+                    status_code=403,
+                )
+                await resp(scope, receive, send)
+                return
+        else:
+            sec_fetch_site = (headers.get("sec-fetch-site") or "").strip().lower()
+            if sec_fetch_site and sec_fetch_site not in ("same-origin", "none"):
+                resp = JSONResponse(
+                    {"detail": "Cross-site browser request blocked by PaperView local security policy."},
+                    status_code=403,
+                )
+                await resp(scope, receive, send)
+                return
+
+            referer = headers.get("referer")
+            if referer:
+                parts = urlsplit(referer)
+                ref_origin = f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else ""
+                if not self._is_trusted_origin(ref_origin, host_header):
+                    resp = JSONResponse(
+                        {"detail": "Cross-origin referer blocked by PaperView local security policy."},
+                        status_code=403,
+                    )
+                    await resp(scope, receive, send)
+                    return
+
+        await self.app(scope, receive, send)
+
+
+# Middleware wrapping order is LIFO in Starlette: TrustedHostMiddleware (added last) runs first.
+app.add_middleware(LocalOriginCSRFMiddleware, allowed_origins=_ALLOWED_ORIGINS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_ALLOWED_HOSTS)
 
 
 def _ingest_pdf_bytes(
@@ -828,7 +928,6 @@ async def serve_spa(full_path: str):
 
 if __name__ == "__main__":
     import argparse
-    import os
     import uvicorn
 
     parser = argparse.ArgumentParser(description="PaperView Local Server")
@@ -845,4 +944,6 @@ if __name__ == "__main__":
         help="Host interface to bind (default: 127.0.0.1)",
     )
     cli_args = parser.parse_args()
+    os.environ["PAPERVIEW_PORT"] = str(cli_args.port)
+    os.environ["PAPERVIEW_HOST"] = str(cli_args.host)
     uvicorn.run("app.main:app", host=cli_args.host, port=cli_args.port)

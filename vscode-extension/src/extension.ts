@@ -87,7 +87,7 @@ async function ensureServerRunning(context: vscode.ExtensionContext): Promise<st
         ['-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', String(port)],
         {
           cwd: path.join(root, 'backend'),
-          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PAPERVIEW_PORT: String(port) },
         }
       );
 

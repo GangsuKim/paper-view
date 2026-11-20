@@ -150,5 +150,6 @@ if (-not $NoBrowser) {
 Push-Location "$Root\backend"
 $env:PYTHONIOENCODING = "utf-8"
 $env:PAPERVIEW_PORT = "$Port"
+$env:PAPERVIEW_HOST = "$BindHost"
 & $VenvPython -m uvicorn app.main:app --host $BindHost --port $Port
 Pop-Location
