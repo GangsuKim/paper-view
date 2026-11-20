@@ -114,7 +114,7 @@ function renderKoreanWithCitations(
               key={`${rk}_${idx}`}
               type="button"
               className={`inline-cite-pill ${activeCitationRefKey === rk ? 'selected' : ''}`}
-              title={`인용 논문 [${rk}] 정보 보기`}
+              title={`[${rk}]`}
               onClick={(e) => {
                 e.stopPropagation();
                 onClickCitation(rk);
@@ -189,7 +189,7 @@ function renderFullEnglishSentence(
               key={`${item.ref_key}_${iIdx}`}
               type="button"
               className={`inline-cite-pill ${isSelected ? 'selected' : ''}`}
-              title={`인용 논문 [${item.ref_key}] 정보 보기`}
+              title={`[${item.ref_key}]`}
               onClick={(e) => {
                 e.stopPropagation();
                 onClickCitation(item.ref_key);
@@ -681,7 +681,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                           e.stopPropagation();
                           setLightboxItem(sent);
                         }}
-                        title="클릭하여 원본 해상도로 크게 보기"
+                        title={t.zoomImage}
                       >
                         <img src={fullImgUrl} alt={sent.media_label || sent.text} loading="lazy" />
                         <span className="media-zoom-hint">

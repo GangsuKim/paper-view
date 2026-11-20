@@ -553,7 +553,7 @@ export const App: React.FC = () => {
               ? {
                   ...prev,
                   ai_status: 'error',
-                  ai_error: data.detail || '스트리밍 번역 실패',
+                  ai_error: data.detail || 'Streaming translation failed',
                 }
               : prev
           );
@@ -1212,7 +1212,7 @@ export const App: React.FC = () => {
                 <button
                   type="button"
                   className={`nav-btn single-active-model-btn ${selectedEngine}`}
-                  title={info?.detail || `현재 모델: ${modelName} (${currentEffortDisplay})`}
+                  title={`${t.modelLabel}: ${modelName} (${currentEffortDisplay})`}
                   onClick={() => {
                     setModelMenuTab(
                       selectedEngine === 'codex'
@@ -1545,7 +1545,7 @@ export const App: React.FC = () => {
                   <button
                     type="button"
                     className={`nav-btn usage-pill-btn ${levelClass}`}
-                    title="구독 사용량 및 남은 한도 확인"
+                    title={t.usageHeader}
                     onClick={() => {
                       const next = !showUsageMenu;
                       setShowUsageMenu(next);

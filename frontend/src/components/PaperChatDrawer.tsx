@@ -79,7 +79,7 @@ function renderInlineRich(
                 type="button"
                 className="inline-cite-pill"
                 onClick={() => onClickCitation(rk)}
-                title={`인용 논문 [${rk}] 정보 보기`}
+                title={`[${rk}]`}
               >
                 [{rk}]
               </button>
@@ -495,7 +495,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
             <button
               type="button"
               className="chat-send-btn stop"
-              title="생성 중단"
+              title={lang === 'ko' ? '생성 중단' : 'Stop'}
               onClick={() => abortRef.current?.abort()}
             >
               <Square size={14} />
@@ -505,7 +505,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
               type="submit"
               className="chat-send-btn"
               disabled={!inputVal.trim()}
-              title="질문 보내기"
+              title={lang === 'ko' ? '질문 보내기' : 'Send'}
             >
               <Send size={15} />
             </button>

@@ -220,7 +220,7 @@ export const PdfPane: React.FC<PdfPaneProps> = ({
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err?.message || 'PDF 로드 실패');
+          setError(err?.message || (lang === 'ko' ? 'PDF 로드 실패' : 'Failed to load PDF'));
           setLoading(false);
         }
       });
