@@ -8,16 +8,18 @@
 
 **An AI Academic Paper Reader Powered Directly by Your Existing Subscriptions**
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![Live Demo](https://img.shields.io/badge/%F0%9F%9A%80_Live_Interactive_Demo-8_Languages-4f46e5?style=flat-square)](https://gangsu.kim/demo/paper-view/) [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=0f172a)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-SSE_Streaming-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![AI Engines](https://img.shields.io/badge/Local_CLI-Claude_%7C_Codex_%7C_Antigravity-d97706?style=flat-square)](#)
-[![Languages](https://img.shields.io/badge/Languages-EN_%7C_KO_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](#)
+[![Languages](https://img.shields.io/badge/Languages-EN_%7C_KO_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](https://gangsu.kim/demo/paper-view/)
 [![VS Code](https://img.shields.io/badge/VS_Code-Extension_Ready-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white)](#)
 
-[**English**](README.md) · [**한국어**](README.ko.md) · [Citation Quick Summary](#-one-click-citation-quick-summary) · [Key Features](#-key-features) · [Quick Start](#-quick-start) · [Acknowledgments](#-acknowledgments)
+[**🚀 Live Interactive Demo (8 Languages)**](https://gangsu.kim/demo/paper-view/) · [**English**](README.md) · [**한국어**](README.ko.md) · [Citation Quick Summary](#-one-click-citation-quick-summary) · [Key Features](#-key-features) · [Quick Start](#-quick-start) · [Acknowledgments](#-acknowledgments)
 
 </div>
+
+> **🚀 Try it right in your browser — Zero Install:** Open the **[Live Interactive Demo (8 Languages)](https://gangsu.kim/demo/paper-view/)** to explore ***"Attention Is All You Need"*** (Vaswani et al.) end-to-end before installing — complete with full text & LaTeX math, bidirectional PDF sync, **Author's Core Claim** cards across all 9 Figures & Tables, curated paper Q&A, and instant **one-click summaries & citation reasons for all 40 cited papers** across **8 languages** (`EN` · `KO` · `JA` · `ZH-CN` · `ZH-TW` · `ES` · `DE` · `FR`), pre-generated with **Gemini 4 Carbon**.
 
 ---
 

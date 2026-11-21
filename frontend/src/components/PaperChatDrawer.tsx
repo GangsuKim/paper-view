@@ -13,8 +13,14 @@ import {
 import {
   clearPaperChatHistory,
   fetchPaperChatHistory,
+  openExternalUrl,
   streamPaperChatMessage,
 } from '../api';
+import {
+  DEMO_RESTORE_CHAT_LABEL,
+  isDemoMode,
+  restoreDemoChatExamples,
+} from '../demoMode';
 import { getUiStrings, type LangCode } from '../i18n';
 import type { ChatMessage, SentenceItem } from '../types';
 import { renderMathText } from '../utils/mathRenderer';
@@ -43,7 +49,7 @@ function renderInlineRich(
 ): React.ReactNode {
   // Tokenize math spans first so * or [1] inside $...$ are preserved for KaTeX
   const tokenRe =
-    /(\$\$[\s\S]+?\$\$|(?<!\\|\$)\$(?!\$)(?!\s)(?:\\.|[^$\\\n])+?(?<!\s)\$(?!\$|[0-9])|`[^`]+`|\*\*[^*]+\*\*|\[\d{1,3}(?:\s*,\s*\d{1,3})*\])/g;
+    /(\$\$[\s\S]+?\$\$|(?<!\\|\$)\$(?!\$)(?!\s)(?:\\.|[^$\\\n])+?(?<!\s)\$(?!\$|[0-9])|`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|https?:\/\/[^\s)<>]+|\[\d{1,3}(?:\s*,\s*\d{1,3})*\])/g;
   const parts = text.split(tokenRe);
 
   return parts.map((part, idx) => {
@@ -63,6 +69,46 @@ function renderInlineRich(
     }
     if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
       return <strong key={idx}>{renderMathText(part.slice(2, -2), `cb_${idx}`)}</strong>;
+    }
+    const mdLinkMatch = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+    if (mdLinkMatch) {
+      const [, label, href] = mdLinkMatch;
+      return (
+        <a
+          key={idx}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="chat-md-link"
+          onClick={(e) => {
+            e.preventDefault();
+            openExternalUrl(href);
+          }}
+        >
+          {label}
+        </a>
+      );
+    }
+    if (/^https?:\/\/[^\s)<>]+$/i.test(part)) {
+      const cleanUrl = part.replace(/[.,;:!?]+$/, '');
+      const trailing = part.slice(cleanUrl.length);
+      return (
+        <React.Fragment key={idx}>
+          <a
+            href={cleanUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="chat-md-link"
+            onClick={(e) => {
+              e.preventDefault();
+              openExternalUrl(cleanUrl);
+            }}
+          >
+            {cleanUrl}
+          </a>
+          {trailing}
+        </React.Fragment>
+      );
     }
     const citMatch = part.match(/^\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\]$/);
     if (citMatch) {
@@ -191,6 +237,7 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
   onChatTurnCompleted,
 }) => {
   const t = getUiStrings(lang);
+  const demoMode = isDemoMode();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputVal, setInputVal] = useState('');
   const [responseStyle, setResponseStyle] = useState<'concise' | 'detailed'>('concise');
@@ -321,22 +368,24 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
           </div>
 
           <div className="row-center" style={{ gap: 4 }}>
-            <div className="chat-style-switch">
-              <button
-                type="button"
-                className={responseStyle === 'concise' ? 'active' : ''}
-                onClick={() => setResponseStyle('concise')}
-              >
-                {t.concise}
-              </button>
-              <button
-                type="button"
-                className={responseStyle === 'detailed' ? 'active' : ''}
-                onClick={() => setResponseStyle('detailed')}
-              >
-                {t.detailed}
-              </button>
-            </div>
+            {!demoMode && (
+              <div className="chat-style-switch">
+                <button
+                  type="button"
+                  className={responseStyle === 'concise' ? 'active' : ''}
+                  onClick={() => setResponseStyle('concise')}
+                >
+                  {t.concise}
+                </button>
+                <button
+                  type="button"
+                  className={responseStyle === 'detailed' ? 'active' : ''}
+                  onClick={() => setResponseStyle('detailed')}
+                >
+                  {t.detailed}
+                </button>
+              </div>
+            )}
 
             <button
               type="button"
@@ -371,6 +420,17 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
             <h4>{t.chatWelcomeTitle}</h4>
             <p title={paperTitle}>{t.chatWelcomeSub}</p>
             <div className="chat-starter-chips">
+              {demoMode && (
+                <button
+                  type="button"
+                  className="chat-starter-btn"
+                  onClick={() => {
+                    restoreDemoChatExamples(lang).then(setMessages).catch(() => {});
+                  }}
+                >
+                  ✨ {DEMO_RESTORE_CHAT_LABEL[lang] || DEMO_RESTORE_CHAT_LABEL.en}
+                </button>
+              )}
               {t.quickPrompts.map((q) => (
                 <button
                   key={q}
@@ -402,11 +462,12 @@ export const PaperChatDrawer: React.FC<PaperChatDrawerProps> = ({
                   {m.model_name && (
                     <div className="chat-bubble-meta">
                       {m.engine === 'codex'
-                        ? 'Codex'
+                        ? `Codex · ${m.model_name}`
                         : m.engine === 'antigravity'
-                        ? 'Antigravity'
-                        : 'Claude'}{' '}
-                      · {m.model_name}
+                        ? `Antigravity · ${m.model_name}`
+                        : m.engine === 'claude'
+                        ? `Claude · ${m.model_name}`
+                        : m.model_name}
                     </div>
                   )}
                 </>

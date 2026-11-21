@@ -12,7 +12,8 @@ import {
   ZoomIn,
   Image as ImageIcon,
 } from 'lucide-react';
-import { getApiBase } from '../api';
+import { resolvePaperMediaUrl } from '../api';
+import { isDemoMode } from '../demoMode';
 import { getUiStrings, type LangCode } from '../i18n';
 import type { CitationMetadataResponse, CitationSummaryResponse } from '../types';
 import { renderMathText } from '../utils/mathRenderer';
@@ -55,6 +56,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
   onJumpToSentence,
 }) => {
   const t = getUiStrings(lang);
+  const demoMode = isDemoMode();
   const [showRawRef, setShowRawRef] = useState(false);
   const [showCitingList, setShowCitingList] = useState(false);
   const [zoomMainFig, setZoomMainFig] = useState(false);
@@ -74,9 +76,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
       : null;
 
   const importTarget = metadata ? metadata.arxiv_id || metadata.pdf_url || '' : '';
-  const mainFigFullUrl = effectiveSummary?.main_figure_url
-    ? `${getApiBase()}${effectiveSummary.main_figure_url}`
-    : null;
+  const mainFigFullUrl = resolvePaperMediaUrl(effectiveSummary?.main_figure_url);
 
   const engineLabel =
     selectedEngine === 'codex'
@@ -157,7 +157,7 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                   </a>
                 )}
 
-                {importTarget && (
+                {importTarget && !demoMode && (
                   <a
                     href={`/?import=${encodeURIComponent(importTarget)}`}
                     target="_blank"
@@ -223,23 +223,26 @@ export const CitationPopover: React.FC<CitationPopoverProps> = ({
                     <div className="cit-summary-right">
                       <span className={`engine-mini-tag ${effectiveSummary.engine}`}>
                         {effectiveSummary.engine === 'codex'
-                          ? 'Codex'
+                          ? `Codex${effectiveSummary.model_name ? ` · ${effectiveSummary.model_name}` : ''}`
                           : effectiveSummary.engine === 'claude'
-                          ? 'Claude'
-                          : 'Antigravity'}
-                        {effectiveSummary.model_name ? ` · ${effectiveSummary.model_name}` : ''}
+                          ? `Claude${effectiveSummary.model_name ? ` · ${effectiveSummary.model_name}` : ''}`
+                          : effectiveSummary.engine === 'gemini'
+                          ? effectiveSummary.model_name || 'Gemini'
+                          : `Antigravity${effectiveSummary.model_name ? ` · ${effectiveSummary.model_name}` : ''}`}
                         {effectiveSummary.reasoning_effort
                           ? ` (${effectiveSummary.reasoning_effort})`
                           : ''}
                       </span>
-                      <button
-                        type="button"
-                        className="icon-tiny-btn"
-                        title={t.retranslateTitle}
-                        onClick={() => onRequestSummary(true)}
-                      >
-                        <RefreshCw size={12} />
-                      </button>
+                      {!demoMode && (
+                        <button
+                          type="button"
+                          className="icon-tiny-btn"
+                          title={t.retranslateTitle}
+                          onClick={() => onRequestSummary(true)}
+                        >
+                          <RefreshCw size={12} />
+                        </button>
+                      )}
                     </div>
                   </div>
 

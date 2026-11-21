@@ -34,11 +34,19 @@ import {
   getPaperPdfUrl,
   getPaperStreamUrl,
   importPaperUrl,
+  openExternalUrl,
   stopPaperStream,
   summarizeCitation,
   updateEngineSettings,
   uploadPaperFile,
 } from './api';
+import {
+  buildDemoCitationMetadata,
+  detectInitialDemoLang,
+  fetchDemoLanguageBundle,
+  isDemoMode,
+  PAPER_VIEW_GITHUB_URL,
+} from './demoMode';
 import { PdfPane } from './components/PdfPane';
 import { ReaderPane } from './components/ReaderPane';
 import { CitationPopover } from './components/CitationPopover';
@@ -88,6 +96,7 @@ function groupModels(models: ModelOptionItem[]): Array<{ group: string; items: M
 }
 
 export const App: React.FC = () => {
+  const demoMode = isDemoMode();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -96,7 +105,9 @@ export const App: React.FC = () => {
   const [selectedEngine, setSelectedEngine] = useState<string>('claude');
   const selectedEngineRef = useRef<string>('claude');
 
-  const [lang, setLang] = useState<LangCode>(() => detectInitialLang());
+  const [lang, setLang] = useState<LangCode>(() =>
+    demoMode ? detectInitialDemoLang() : detectInitialLang()
+  );
   const langRef = useRef<LangCode>(lang);
   const [showLangMenu, setShowLangMenu] = useState<boolean>(false);
   const t = getUiStrings(lang);
@@ -117,6 +128,7 @@ export const App: React.FC = () => {
   const [citationSummaries, setCitationSummaries] = useState<
     Record<string, CitationSummaryResponse>
   >({});
+  const citationSummariesRef = useRef<Record<string, CitationSummaryResponse>>({});
 
   const [loadingPaper, setLoadingPaper] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
@@ -177,17 +189,21 @@ export const App: React.FC = () => {
     chatWidthRef.current = chatWidth;
   }, [chatWidth]);
 
-  const loadUsageStatus = useCallback(async (refresh = false) => {
-    setRefreshingUsage(true);
-    try {
-      const u = await fetchUsageStatus(refresh);
-      setUsageStatus(u);
-    } catch {
-      // ignore transient error
-    } finally {
-      setRefreshingUsage(false);
-    }
-  }, []);
+  const loadUsageStatus = useCallback(
+    async (refresh = false) => {
+      if (demoMode) return;
+      setRefreshingUsage(true);
+      try {
+        const u = await fetchUsageStatus(refresh);
+        setUsageStatus(u);
+      } catch {
+        // ignore transient error
+      } finally {
+        setRefreshingUsage(false);
+      }
+    },
+    [demoMode]
+  );
 
   useEffect(() => {
     selectedEngineRef.current = selectedEngine;
@@ -201,6 +217,10 @@ export const App: React.FC = () => {
   useEffect(() => {
     paperRef.current = paper;
   }, [paper]);
+
+  useEffect(() => {
+    citationSummariesRef.current = citationSummaries;
+  }, [citationSummaries]);
 
   useEffect(() => {
     activeCitationKeyRef.current = activeCitationKey;
@@ -222,6 +242,18 @@ export const App: React.FC = () => {
   }, [closeStream]);
 
   const handleGoHome = useCallback(() => {
+    if (demoMode) {
+      setActiveCitationKey(null);
+      setShowChatPanel(false);
+      setGlobalError(null);
+      const firstSent = paperRef.current?.sentences?.[0];
+      if (firstSent) {
+        setActiveSentenceId(firstSent.id);
+        setReaderScrollSignal((n) => n + 1);
+        setPdfScrollSignal((n) => n + 1);
+      }
+      return;
+    }
     closeStream();
     setPaper(null);
     setActiveCitationKey(null);
@@ -232,7 +264,7 @@ export const App: React.FC = () => {
     cleanUrl.searchParams.delete('import');
     const nextHref = `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`;
     window.history.replaceState({}, '', nextHref || '/');
-  }, [closeStream]);
+  }, [closeStream, demoMode]);
 
   const handleRequestMediaInsight = useCallback(
     async (sentenceId: string, force = false) => {
@@ -660,6 +692,53 @@ export const App: React.FC = () => {
     [arxivInput, applyLoadedBundle]
   );
 
+  const loadDemoLanguage = useCallback(
+    async (targetLang: LangCode) => {
+      const isInitialLoad = !paperRef.current;
+      if (isInitialLoad) {
+        setLoadingPaper(true);
+      }
+      setGlobalError(null);
+      try {
+        const bundle = await fetchDemoLanguageBundle(targetLang);
+        closeStream();
+        paperRef.current = bundle.paper;
+        citationSummariesRef.current = bundle.citation_summaries || {};
+        setPaper(bundle.paper);
+        setCitationSummaries(bundle.citation_summaries || {});
+        setCitSummaryErrors({});
+        setActiveSentenceId((cur) =>
+          cur && bundle.paper.sentences.some((s) => s.id === cur)
+            ? cur
+            : bundle.paper.sentences[0]?.id || null
+        );
+
+        const openRk = activeCitationKeyRef.current;
+        if (openRk) {
+          const freshMeta = buildDemoCitationMetadata(
+            bundle.paper,
+            bundle.citation_summaries || {},
+            openRk
+          );
+          setCitationMetaCache({ [openRk]: freshMeta });
+        } else {
+          setCitationMetaCache({});
+        }
+
+        const url = new URL(window.location.href);
+        url.searchParams.set('lang', targetLang);
+        window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+      } catch (err: any) {
+        setGlobalError(err?.message || `Failed to load demo bundle (${targetLang}).`);
+      } finally {
+        if (isInitialLoad) {
+          setLoadingPaper(false);
+        }
+      }
+    },
+    [closeStream]
+  );
+
   const handleChangeLanguage = useCallback(
     async (nextLang: LangCode) => {
       setShowLangMenu(false);
@@ -671,6 +750,10 @@ export const App: React.FC = () => {
       } catch {
         // ignore
       }
+      if (demoMode) {
+        await loadDemoLanguage(nextLang);
+        return;
+      }
       updateEngineSettings({ default_lang: nextLang }).catch(() => {});
       fetchPapersList(nextLang)
         .then(setRecentPapers)
@@ -679,12 +762,18 @@ export const App: React.FC = () => {
         await openPaperById(paperRef.current.paper_id, nextLang);
       }
     },
-    [openPaperById]
+    [demoMode, loadDemoLanguage, openPaperById]
   );
 
-  // Initial bootstrap: models catalog, recent papers, URL ?paperId= or ?import=, and VS Code bridge
+  // Initial bootstrap: Demo Mode static bundle OR local server catalog/papers
   useEffect(() => {
     const initLang = langRef.current;
+    if (demoMode) {
+      document.title = 'PaperView — Attention Is All You Need (Interactive Demo)';
+      loadDemoLanguage(initLang);
+      return;
+    }
+
     updateEngineSettings({ default_lang: initLang }).catch(() => {});
     fetchModelsCatalog(false)
       .then(({ engines: list, catalog }) => {
@@ -724,7 +813,7 @@ export const App: React.FC = () => {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [openPaperById, handleImportUrl]);
+  }, [demoMode, loadDemoLanguage, openPaperById, handleImportUrl, loadUsageStatus]);
 
   // Split pane & Chat panel resize handlers
   useEffect(() => {
@@ -831,6 +920,20 @@ export const App: React.FC = () => {
     async (targetPaperId: string, refKey: string) => {
       setActiveCitationKey(refKey);
       setCitMetaError(null);
+
+      if (demoMode) {
+        const curPaper = paperRef.current;
+        if (curPaper) {
+          const meta = buildDemoCitationMetadata(
+            curPaper,
+            citationSummariesRef.current,
+            refKey
+          );
+          setCitationMetaCache((prev) => ({ ...prev, [refKey]: meta }));
+        }
+        return;
+      }
+
       const useLang = langRef.current;
       const jobId = `${targetPaperId}:${refKey}:${useLang}`;
       setSummaryAlerts((prev) =>
@@ -856,7 +959,7 @@ export const App: React.FC = () => {
         setLoadingCitMeta(false);
       }
     },
-    [citationMetaCache]
+    [citationMetaCache, demoMode]
   );
 
   // Stage 1: Click inline citation -> fetch metadata ONLY
@@ -982,6 +1085,7 @@ export const App: React.FC = () => {
   ).length;
 
   useEffect(() => {
+    if (demoMode) return;
     if (!showQueueModal && activeQueueCount === 0 && !queueState.scheduled_time_label) {
       return;
     }
@@ -1010,13 +1114,16 @@ export const App: React.FC = () => {
     <div
       className="app-shell"
       onDragOver={(e) => {
+        if (demoMode) return;
         e.preventDefault();
         setIsDraggingFile(true);
       }}
       onDragLeave={(e) => {
+        if (demoMode) return;
         if (e.currentTarget === e.target) setIsDraggingFile(false);
       }}
       onDrop={(e) => {
+        if (demoMode) return;
         e.preventDefault();
         setIsDraggingFile(false);
         const f = e.dataTransfer.files?.[0];
@@ -1025,7 +1132,7 @@ export const App: React.FC = () => {
         }
       }}
     >
-      {isDraggingFile && (
+      {isDraggingFile && !demoMode && (
         <div className="drop-overlay">
           <div className="drop-box">
             <Upload size={36} />
@@ -1040,31 +1147,141 @@ export const App: React.FC = () => {
           <div
             className="brand-logo"
             onClick={handleGoHome}
-            title={t.homeTitle}
+            title={demoMode ? 'Attention Is All You Need — Interactive Demo' : t.homeTitle}
           >
             <Sparkles size={17} />
             <span>PaperView</span>
           </div>
 
-          {paper && (
-            <div className="current-paper-title" title={paper.title}>
-              {paper.title}
+          {(paper || demoMode) && (
+            <div
+              className="current-paper-title"
+              title={paper?.title || 'Attention Is All You Need'}
+            >
+              {paper?.title || 'Attention Is All You Need'}
             </div>
+          )}
+
+          {demoMode && (
+            <span
+              className="demo-topbar-badge"
+              title="100% Static Browser Showcase — Pre-generated with Gemini 4 Carbon"
+            >
+              <Sparkles size={12} />
+              <span>Interactive Demo · Gemini 4 Carbon</span>
+            </span>
           )}
         </div>
 
         <div className="navbar-controls">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/pdf,.pdf"
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) handleFileSelected(f);
-              e.target.value = '';
-            }}
-          />
+          {demoMode ? (
+            <>
+              {/* Prominent 8-Language Selector for Interactive Demo */}
+              <div className="library-dropdown-wrap">
+                <button
+                  type="button"
+                  className="nav-btn demo-lang-btn"
+                  title={t.langMenuHeader}
+                  onClick={() => setShowLangMenu((v) => !v)}
+                >
+                  <Languages size={15} />
+                  <span>{currentLangOption.nativeName}</span>
+                  <span className="demo-lang-count-pill">8 Langs</span>
+                  <ChevronDown size={12} style={{ opacity: 0.75 }} />
+                </button>
+
+                {showLangMenu && (
+                  <div
+                    className="library-popover"
+                    style={{ minWidth: 225 }}
+                    onMouseLeave={() => setShowLangMenu(false)}
+                  >
+                    <div className="lib-pop-header">{t.langMenuHeader}</div>
+                    {LANGUAGE_OPTIONS.map((opt) => {
+                      const isCur = opt.code === lang;
+                      return (
+                        <button
+                          key={opt.code}
+                          type="button"
+                          className={`model-row-btn ${isCur ? 'current' : ''}`}
+                          onClick={() => handleChangeLanguage(opt.code)}
+                        >
+                          <span>
+                            <strong>{opt.nativeName}</strong>{' '}
+                            <span style={{ opacity: 0.65, fontSize: 11.5 }}>
+                              ({opt.englishName})
+                            </span>
+                          </span>
+                          {isCur && <CheckCircle2 size={14} className="check-accent" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {paper && (
+                <>
+                  <button
+                    type="button"
+                    className={`nav-btn ${showChatPanel ? 'primary' : ''}`}
+                    onClick={() => setShowChatPanel((v) => !v)}
+                  >
+                    <MessageSquare size={14} />
+                    <span>{t.paperChatBtn}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`icon-btn ${showPdfPane ? 'active-icon' : ''}`}
+                    title={t.togglePdfTitle(showPdfPane)}
+                    onClick={() => setShowPdfPane((v) => !v)}
+                  >
+                    <Columns size={16} />
+                  </button>
+                </>
+              )}
+
+              <button
+                type="button"
+                className="icon-btn"
+                title={t.toggleThemeTitle(darkMode)}
+                onClick={() => setDarkMode((v) => !v)}
+              >
+                {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+              </button>
+
+              <button
+                type="button"
+                className="nav-btn demo-github-btn"
+                title="View PaperView on GitHub"
+                onClick={() => openExternalUrl(PAPER_VIEW_GITHUB_URL)}
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path d="M12 0.3C5.37 0.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.2 11.39.6.11.82-.26.82-.58 0-.29-.01-1.05-.02-2.06-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.21.08 1.85 1.24 1.85 1.24 1.07 1.84 2.81 1.31 3.5 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.02 0c2.28-1.55 3.29-1.23 3.29-1.23.66 1.66.25 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.61-.01 2.9-.01 3.29 0 .32.21.7.82.58C20.57 22.1 24 17.6 24 12.3 24 5.67 18.63 0.3 12 0.3z" />
+                </svg>
+                <span>GitHub</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handleFileSelected(f);
+                  e.target.value = '';
+                }}
+              />
 
           <button
             type="button"
@@ -1824,6 +2041,8 @@ export const App: React.FC = () => {
           >
             {darkMode ? <Sun size={16} /> : <Moon size={16} />}
           </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -1902,9 +2121,44 @@ export const App: React.FC = () => {
       {loadingPaper ? (
         <div className="center-loading-screen">
           <div className="spinner-ring large" />
-          <h3>{t.loadingPdfTitle}</h3>
-          <p>{t.loadingPdfSub}</p>
+          <h3>
+            {demoMode
+              ? 'Loading Interactive Demo — Attention Is All You Need...'
+              : t.loadingPdfTitle}
+          </h3>
+          <p>
+            {demoMode
+              ? 'Preparing 8-language Gemini 4 Carbon translations, Figures & 40 citation summaries'
+              : t.loadingPdfSub}
+          </p>
         </div>
+      ) : !paper && demoMode ? (
+        <main className="welcome-landing">
+          <div className="welcome-hero-card" style={{ maxWidth: 560, textAlign: 'center' }}>
+            <div className="hero-badge">Interactive Demo · Gemini 4 Carbon</div>
+            <h1>Attention Is All You Need</h1>
+            <p className="hero-sub">
+              {globalError || 'Demo data bundle is not loaded yet.'}
+            </p>
+            <div className="row-center" style={{ justifyContent: 'center', gap: 10 }}>
+              <button
+                type="button"
+                className="nav-btn primary"
+                onClick={() => loadDemoLanguage(lang)}
+              >
+                <RefreshCw size={14} />
+                <span>{t.retryBtn}</span>
+              </button>
+              <button
+                type="button"
+                className="nav-btn"
+                onClick={() => openExternalUrl(PAPER_VIEW_GITHUB_URL)}
+              >
+                <span>GitHub</span>
+              </button>
+            </div>
+          </div>
+        </main>
       ) : !paper ? (
         <main className="welcome-landing">
           <div className="welcome-hero-card">
@@ -1953,6 +2207,15 @@ export const App: React.FC = () => {
                     onClick={() => handleImportUrl('2005.11401')}
                   >
                     RAG (Lewis et al.)
+                  </button>
+                  <button
+                    type="button"
+                    className="sample-demo-pill"
+                    onClick={() =>
+                      window.open(`/?demo=1&lang=${encodeURIComponent(lang)}`, '_blank')
+                    }
+                  >
+                    ✨ Interactive Demo (8 Langs)
                   </button>
                 </div>
               </div>
@@ -2026,7 +2289,9 @@ export const App: React.FC = () => {
               aiStatus={paper.ai_status}
               aiProgress={paper.ai_progress}
               aiModel={
-                currentModelDisplay
+                demoMode
+                  ? paper.ai_model || 'Gemini 4 Carbon'
+                  : currentModelDisplay
                   ? `${currentModelDisplay} (${currentEffortDisplay})`
                   : paper.ai_model || null
               }
@@ -2067,7 +2332,9 @@ export const App: React.FC = () => {
                 summaryError={citSummaryErrors[activeJobId] || null}
                 selectedEngine={selectedEngine}
                 selectedModelLabel={
-                  currentModelDisplay
+                  demoMode
+                    ? paper.ai_model || 'Gemini 4 Carbon'
+                    : currentModelDisplay
                     ? `${currentModelDisplay} · ${currentEffortDisplay}`
                     : undefined
                 }
@@ -2100,7 +2367,9 @@ export const App: React.FC = () => {
               }}
               selectedEngine={selectedEngine}
               selectedModelLabel={
-                currentModelDisplay
+                demoMode
+                  ? paper.ai_model || 'Gemini 4 Carbon'
+                  : currentModelDisplay
                   ? `${currentModelDisplay} · ${currentEffortDisplay}`
                   : undefined
               }
@@ -2112,7 +2381,9 @@ export const App: React.FC = () => {
               onClickCitationInChat={(rk) =>
                 openCitationDrawerByRefKey(paper.paper_id, rk)
               }
-              onChatTurnCompleted={() => loadUsageStatus(true)}
+              onChatTurnCompleted={() => {
+                if (!demoMode) loadUsageStatus(true);
+              }}
             />
           )}
         </main>

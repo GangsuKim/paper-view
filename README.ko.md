@@ -8,16 +8,19 @@
 
 **내 구독 그대로 쓰는 AI 학술 논문 리더**
 
+[![Live Demo](https://img.shields.io/badge/%F0%9F%9A%80_Live_Interactive_Demo-8_Languages-4f46e5?style=flat-square)](https://gangsu.kim/demo/paper-view/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React_18-TypeScript-61DAFB?style=flat-square&logo=react&logoColor=0f172a)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-SSE_Streaming-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![AI Engines](https://img.shields.io/badge/Local_CLI-Claude_%7C_Codex_%7C_Antigravity-d97706?style=flat-square)](#)
-[![Languages](https://img.shields.io/badge/Languages-KO_%7C_EN_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](#)
+[![Languages](https://img.shields.io/badge/Languages-KO_%7C_EN_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](https://gangsu.kim/demo/paper-view/)
 [![VS Code](https://img.shields.io/badge/VS_Code-Extension_Ready-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white)](#)
 
-[**English**](README.md) · [**한국어**](README.ko.md) · [인용 논문 간단 요약](#-원클릭-인용-논문-간단-요약-보기) · [주요 기능](#-주요-기능) · [빠른 시작](#-빠른-시작) · [감사의 글](#-감사의-글)
+[**🚀 실시간 인터랙티브 데모 (8개 언어)**](https://gangsu.kim/demo/paper-view/) · [**English**](README.md) · [**한국어**](README.ko.md) · [인용 논문 간단 요약](#-원클릭-인용-논문-간단-요약-보기) · [주요 기능](#-주요-기능) · [빠른 시작](#-빠른-시작) · [감사의 글](#-감사의-글)
 
 </div>
+
+> **🚀 설치 전 브라우저에서 바로 체험해 보세요:** **[실시간 인터랙티브 데모 (8개 언어)](https://gangsu.kim/demo/paper-view/)** 를 열면 별도 설치 없이 ***"Attention Is All You Need"*** (Vaswani et al.) 논문 전체의 수식·양방향 PDF 동기화, 9개 모든 그림·표의 **저자가 말하고 싶은 핵심** 해설, 추천 논문 Q&A, 그리고 **40개 전체 인용 논문의 원클릭 핵심 요약 및 인용 이유**를 **8개 언어**(`KO` · `EN` · `JA` · `ZH-CN` · `ZH-TW` · `ES` · `DE` · `FR`, **Gemini 4 Carbon** 번역)로 즉시 전환하며 살펴볼 수 있습니다.
 
 ---
 

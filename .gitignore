@@ -17,3 +17,9 @@ backend/.paperview_data/
 .env.*
 .DS_Store
 Thumbs.db
+
+# Static Demo Data & GitHub Pages Assets (explicitly tracked)
+!docs/
+!docs/**
+!docs/demo-data/
+!docs/demo-data/**

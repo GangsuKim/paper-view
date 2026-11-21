@@ -949,6 +949,20 @@ async def retry_queue_item(item_id: str) -> QueueStateResponse:
     return await queue_manager.retry_item(item_id)
 
 
+# Serve interactive static demo (docs/ & docs/demo-data/) when present
+DOCS_DEMO_DIR = PROJECT_ROOT / "docs"
+if (DOCS_DEMO_DIR / "demo-data").exists():
+    app.mount(
+        "/demo-data",
+        StaticFiles(directory=str(DOCS_DEMO_DIR / "demo-data")),
+        name="demo-data",
+    )
+    app.mount(
+        "/demo",
+        StaticFiles(directory=str(DOCS_DEMO_DIR), html=True),
+        name="demo",
+    )
+
 # Serve built frontend bundle when available so a single server powers both Browser and VS Code Webview
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 if (FRONTEND_DIST / "assets").exists():

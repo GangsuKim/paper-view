@@ -3958,3 +3958,84 @@ a.cit-link-btn.primary-go:hover {
   gap: 4px;
   flex-shrink: 0;
 }
+
+/* Interactive Static Demo Mode Polish */
+.demo-topbar-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid var(--cite-border);
+  color: var(--accent);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+@media (max-width: 960px) {
+  .demo-topbar-badge {
+    display: none;
+  }
+}
+
+.nav-btn.demo-lang-btn {
+  border-color: var(--cite-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  padding: 0 12px;
+}
+
+.nav-btn.demo-lang-btn:hover {
+  border-color: var(--accent);
+  background: var(--cite-bg);
+}
+
+.demo-lang-count-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--cite-border);
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.nav-btn.demo-github-btn {
+  font-weight: 700;
+}
+
+.sample-presets button.sample-demo-pill {
+  border-color: var(--cite-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sample-presets button.sample-demo-pill:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.engine-mini-tag.gemini {
+  background: var(--agy-bg);
+  color: var(--agy-color);
+}
+
+.chat-md-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+.chat-md-link:hover {
+  color: var(--accent-hover);
+}

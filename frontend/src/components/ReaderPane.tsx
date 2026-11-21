@@ -20,7 +20,8 @@ import {
   Globe,
   Database,
 } from 'lucide-react';
-import { getApiBase, openExternalUrl } from '../api';
+import { openExternalUrl, resolvePaperMediaUrl } from '../api';
+import { isDemoMode } from '../demoMode';
 import { getUiStrings, type LangCode } from '../i18n';
 import type { InlineCitation, PaperOverview, PaperResourceLink, SentenceItem } from '../types';
 import { getExplicitMathRanges, renderMathText } from '../utils/mathRenderer';
@@ -259,6 +260,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
   onRestartStream,
 }) => {
   const t = getUiStrings(lang);
+  const demoMode = isDemoMode();
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const overviewCardRef = useRef<HTMLDivElement | null>(null);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -347,7 +349,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             <span>{showKo ? t.showTransBtn : t.onlyOrigBtn}</span>
           </button>
 
-          {aiStatus === 'completed' && (
+          {aiStatus === 'completed' && !demoMode && (
             <button
               type="button"
               className="icon-btn"
@@ -533,15 +535,17 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
 
               {overview && (
                 <div className="row-center" style={{ gap: 4 }}>
-                  <button
-                    type="button"
-                    className="icon-tiny-btn"
-                    title={t.retranslateTitle}
-                    disabled={loadingOverview}
-                    onClick={onRefreshOverview}
-                  >
-                    <RefreshCw size={12} className={loadingOverview ? 'spin' : ''} />
-                  </button>
+                  {!demoMode && (
+                    <button
+                      type="button"
+                      className="icon-tiny-btn"
+                      title={t.retranslateTitle}
+                      disabled={loadingOverview}
+                      onClick={onRefreshOverview}
+                    >
+                      <RefreshCw size={12} className={loadingOverview ? 'spin' : ''} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="icon-tiny-btn"
@@ -644,7 +648,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
               {items.map((sent) => {
                 const isActive = sent.id === activeSentenceId;
                 const isMedia = sent.kind === 'figure' || sent.kind === 'table';
-                const fullImgUrl = sent.image_url ? `${getApiBase()}${sent.image_url}` : null;
+                const fullImgUrl = resolvePaperMediaUrl(sent.image_url);
 
                 return (
                   <div
@@ -728,7 +732,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
                                   )}
                                 </span>
                               </span>
-                              {onRequestMediaInsight && (
+                              {onRequestMediaInsight && !demoMode && (
                                 <button
                                   type="button"
                                   className="icon-tiny-btn"
@@ -796,7 +800,7 @@ export const ReaderPane: React.FC<ReaderPaneProps> = ({
             </div>
             <div className="media-lightbox-img-wrap">
               <img
-                src={`${getApiBase()}${liveLightboxItem.image_url}`}
+                src={resolvePaperMediaUrl(liveLightboxItem.image_url) || ''}
                 alt={liveLightboxItem.media_label || ''}
               />
             </div>

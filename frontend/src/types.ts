@@ -157,6 +157,14 @@ export interface LoadedPaperBundle {
   paper: PaperDocument;
   analyses: Record<string, SentenceAnalysis>;
   citation_summaries: Record<string, CitationSummaryResponse>;
+  chat_messages?: ChatMessage[];
+}
+
+export interface DemoLanguageBundle {
+  paper: PaperDocument;
+  analyses: Record<string, SentenceAnalysis>;
+  citation_summaries: Record<string, CitationSummaryResponse>;
+  chat_messages: ChatMessage[];
 }
 
 export interface EngineInfo {

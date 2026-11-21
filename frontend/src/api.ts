@@ -1,3 +1,10 @@
+import {
+  appendDemoChatTurn,
+  clearDemoChatHistory,
+  getDemoChatHistory,
+  isDemoMode,
+  resolveDemoAssetUrl,
+} from './demoMode';
 import type {
   AllModelsCatalog,
   ChatMessage,
@@ -28,6 +35,17 @@ export function getApiBase(): string {
     return fromQuery.replace(/\/$/, '');
   }
   return '';
+}
+
+export function resolvePaperMediaUrl(rawUrl?: string | null): string | null {
+  if (!rawUrl) return null;
+  if (/^https?:\/\//i.test(rawUrl)) {
+    return rawUrl;
+  }
+  if (rawUrl.startsWith('demo-data/') || rawUrl.startsWith('./')) {
+    return resolveDemoAssetUrl(rawUrl);
+  }
+  return `${getApiBase()}${rawUrl}`;
 }
 
 async function handleJson<T>(res: Response): Promise<T> {
@@ -115,6 +133,9 @@ export async function importPaperUrl(urlOrArxiv: string, lang?: string): Promise
 }
 
 export function getPaperPdfUrl(paperId: string): string {
+  if (isDemoMode()) {
+    return resolveDemoAssetUrl('demo-data/source.pdf');
+  }
   return `${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/pdf`;
 }
 
@@ -273,6 +294,9 @@ export function openExternalUrl(url: string): void {
 }
 
 export async function fetchPaperChatHistory(paperId: string, lang?: string): Promise<ChatMessage[]> {
+  if (isDemoMode()) {
+    return getDemoChatHistory(lang);
+  }
   const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
   const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/chat${qs}`);
   const data = await handleJson<{ messages: ChatMessage[] }>(res);
@@ -280,6 +304,10 @@ export async function fetchPaperChatHistory(paperId: string, lang?: string): Pro
 }
 
 export async function clearPaperChatHistory(paperId: string, lang?: string): Promise<void> {
+  if (isDemoMode()) {
+    clearDemoChatHistory(lang);
+    return;
+  }
   const qs = lang ? `?lang=${encodeURIComponent(lang)}` : '';
   const res = await fetch(`${getApiBase()}/api/papers/${encodeURIComponent(paperId)}/chat${qs}`, {
     method: 'DELETE',
@@ -300,6 +328,19 @@ export async function streamPaperChatMessage(params: {
   onDelta: (delta: string) => void;
   onDone?: (assistantMsg: ChatMessage) => void;
 }): Promise<void> {
+  if (isDemoMode()) {
+    const { userMsg, assistantMsg } = await appendDemoChatTurn(
+      params.lang,
+      params.message,
+      params.contextSnippet
+    );
+    params.onUserSaved?.(userMsg, assistantMsg.id);
+    params.onModel?.('gemini', 'Gemini 4 Carbon');
+    params.onDelta(assistantMsg.content);
+    params.onDone?.(assistantMsg);
+    return;
+  }
+
   const res = await fetch(
     `${getApiBase()}/api/papers/${encodeURIComponent(params.paperId)}/chat/stream`,
     {

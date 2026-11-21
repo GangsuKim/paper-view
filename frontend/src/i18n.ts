@@ -18,8 +18,30 @@ export const LANGUAGE_OPTIONS: LanguageOption[] = [
   { code: 'fr', nativeName: 'Français', englishName: 'French', shortBadge: 'FR' },
 ];
 
-export function detectInitialLang(): LangCode {
+export function normalizeUiLangCode(raw?: string | null): LangCode | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const exact = LANGUAGE_OPTIONS.find((o) => o.code.toLowerCase() === trimmed.toLowerCase());
+  if (exact) return exact.code;
+  const low = trimmed.toLowerCase();
+  if (low.startsWith('ko')) return 'ko';
+  if (low === 'zh-tw' || low === 'zh-hk' || low.includes('hant')) return 'zh-TW';
+  if (low.startsWith('zh')) return 'zh-CN';
+  if (low.startsWith('ja')) return 'ja';
+  if (low.startsWith('es')) return 'es';
+  if (low.startsWith('de')) return 'de';
+  if (low.startsWith('fr')) return 'fr';
+  if (low.startsWith('en')) return 'en';
+  return null;
+}
+
+export function detectInitialLang(fallback: LangCode = 'ko'): LangCode {
   try {
+    if (typeof window !== 'undefined') {
+      const qLang = normalizeUiLangCode(new URLSearchParams(window.location.search).get('lang'));
+      if (qLang) return qLang;
+    }
     const saved = localStorage.getItem('paperview_lang');
     if (saved && LANGUAGE_OPTIONS.some((o) => o.code === saved)) {
       return saved as LangCode;
@@ -36,7 +58,7 @@ export function detectInitialLang(): LangCode {
   if (nav.startsWith('de')) return 'de';
   if (nav.startsWith('fr')) return 'fr';
   if (nav.startsWith('en')) return 'en';
-  return 'ko';
+  return fallback;
 }
 
 export interface UiStrings {
