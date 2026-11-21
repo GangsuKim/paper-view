@@ -15,7 +15,7 @@
 [![Languages](https://img.shields.io/badge/Languages-EN_%7C_KO_%7C_JA_%7C_ZH_%7C_ES_%7C_DE_%7C_FR-4f46e5?style=flat-square)](https://gangsu.kim/demo/paper-view/)
 [![VS Code](https://img.shields.io/badge/VS_Code-Extension_Ready-007ACC?style=flat-square&logo=visualstudiocode&logoColor=white)](#)
 
-[**🚀 Live Interactive Demo (8 Languages)**](https://gangsu.kim/demo/paper-view/) · [**English**](README.md) · [**한국어**](README.ko.md) · [Citation Quick Summary](#-one-click-citation-quick-summary) · [Key Features](#-key-features) · [Quick Start](#-quick-start) · [Acknowledgments](#-acknowledgments)
+[**🚀 Live Interactive Demo (8 Languages)**](https://gangsu.kim/demo/paper-view/) · [Key Features](#-key-features) · [Quick Start](#-quick-start)
 
 </div>
 
